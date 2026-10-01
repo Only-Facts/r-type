@@ -14,7 +14,7 @@ std::size_t parse_arguments(int argc, const char *argv[]) {
   return SUCCESS;
 }
 
-int main (int argc, const char *argv[]) {
+int main(int argc, const char *argv[]) {
   std::size_t bits = parse_arguments(argc, argv);
 
   if (bits & 0b011) return FAIL;

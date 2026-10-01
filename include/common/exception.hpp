@@ -1,5 +1,6 @@
 #ifndef EXECEPTION_HPP
-  #define EXECEPTION_HPP
+#define EXECEPTION_HPP
+
 #include <exception>
 #include <string>
 
@@ -14,4 +15,4 @@ private:
 };
 }
 
-#endif /* EXECEPTION_HPP */
+#endif // !EXECEPTION_HPP
