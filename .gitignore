@@ -1,0 +1,7 @@
+.old
+compile_commands.json
+*.o
+.cache
+*.nts
+build/
+vgcore*
