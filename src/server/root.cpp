@@ -1,17 +1,8 @@
-#include "variables.hpp"
+#include "cli.hpp"
 #include "exception.hpp"
+#include "variables.hpp"
 #include <cstddef>
 #include <iostream>
-
-std::size_t print_usage(void) {
-  std::cout <<
-    ":: Usage:\n" <<
-    "   r-type_server [OPTIONS]\n\n" <<
-    ":: Options:\n" <<
-    "   -h, --help  Display this help message."
-    << std::endl;
-  return HELP;
-}
 
 std::size_t parse_arguments(int argc, const char *argv[]) {
   (void)argc;
@@ -26,7 +17,7 @@ std::size_t parse_arguments(int argc, const char *argv[]) {
 int main (int argc, const char *argv[]) {
   std::size_t bits = parse_arguments(argc, argv);
 
-  if (bits & 0b11) return FAIL;
+  if (bits & 0b011) return FAIL;
   if (bits & 0b100) return SUCCESS;
 
   try {
@@ -36,9 +27,9 @@ int main (int argc, const char *argv[]) {
     return ERROR;
   } catch (const std::exception& e) {
     std::cerr << "Uncaught error: " << e.what() << std::endl;
-    return ERROR;
+    return FAIL;
   } catch (...) {
     std::cerr << "Uncaught error." << std::endl;
-    return ERROR;
+    return FAIL;
   }
 }
