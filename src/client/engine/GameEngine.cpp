@@ -1,12 +1,13 @@
 #include "GameEngine.hpp"
 
 namespace rtype::engine {
-  GameEngine::GameEngine(std::unique_ptr<IWindow> window) 
-    : _window(std::move(window)) {}
+  GameEngine::GameEngine(std::unique_ptr<IWindow> window, std::unique_ptr<IInputManager> inputManager) 
+    : _window(std::move(window)), _inputManager(std::move(inputManager)) {}
 
   void GameEngine::run() {
     while (_window->isOpen()) {
-      _window->pollEvents();
+      _inputManager->update();
+      _window->pollEvents(*_inputManager);
 
       float dt = _window->getDeltaTime();
 
@@ -16,7 +17,8 @@ namespace rtype::engine {
   }
 
   void GameEngine::update(float deltaTime) {
-    (void)deltaTime; 
+    (void)deltaTime;
+    if (_inputManager->isKeyJustPressed(KeyCode::Escape)) _window->close();
   }
 
   void GameEngine::render() {

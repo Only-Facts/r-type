@@ -1,5 +1,6 @@
 #include "cli.hpp"
 #include "exception.hpp"
+#include "input/SFMLInputManager.hpp"
 #include "variables.hpp"
 #include "GameEngine.hpp"
 #include "SFMLWindow.hpp"
@@ -23,10 +24,10 @@ int main(int argc, const char *argv[]) {
   if (bits & 0b100) return SUCCESS;
 
   try {
-    std::unique_ptr<rtype::engine::IWindow> window = 
-      std::make_unique<rtype::engine::SFMLWindow>(1920, 1080, "R-Type Client");
+    auto window = std::make_unique<rtype::engine::SFMLWindow>(1920, 1080, "R-Type Client");
+    auto inputManager = std::make_unique<rtype::engine::SFMLInputManager>();
 
-    rtype::engine::GameEngine engine(std::move(window));
+    rtype::engine::GameEngine engine(std::move(window), std::move(inputManager));
     engine.run();
 
     return SUCCESS;

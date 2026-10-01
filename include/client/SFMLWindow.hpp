@@ -14,7 +14,7 @@ namespace rtype::engine {
     void close() override;
     void clear() override;
     void display() override;
-    void pollEvents() override;
+    void pollEvents(IInputManager& inputManager) override;
     float getDeltaTime() override;
 
   private:
