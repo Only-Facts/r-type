@@ -1,4 +1,5 @@
 #include "SFMLWindow.hpp"
+#include "input/SFMLInputManager.hpp"
 
 namespace rtype::engine {
   SFMLWindow::SFMLWindow(unsigned int width, unsigned int height, const std::string& title)
@@ -22,11 +23,12 @@ namespace rtype::engine {
     _window.display();
   }
 
-  void SFMLWindow::pollEvents() {
+  void SFMLWindow::pollEvents(IInputManager& inputManager) {
+    auto* sfmlInput = dynamic_cast<SFMLInputManager*>(&inputManager);
+
     while (auto event = _window.pollEvent()) {
-      if (event->is<sf::Event::Closed>()) {
-        close();
-      }
+      if (event->is<sf::Event::Closed>()) close();
+      if (sfmlInput) sfmlInput->handleEvent(*event);
     }
   }
 
