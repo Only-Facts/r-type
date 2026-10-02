@@ -1,8 +1,10 @@
 #include "GameEngine.hpp"
 
 namespace rtype::engine {
-  GameEngine::GameEngine(std::unique_ptr<IWindow> window, std::unique_ptr<IInputManager> inputManager) 
-    : _window(std::move(window)), _inputManager(std::move(inputManager)) {}
+  GameEngine::GameEngine(std::unique_ptr<IWindow> window,
+                         std::unique_ptr<IInputManager> inputManager,
+                         std::unique_ptr<ITextureManager> textureManager)
+    : _window(std::move(window)), _inputManager(std::move(inputManager)), _textureManager(std::move(textureManager)) {}
 
   void GameEngine::run() {
     while (_window->isOpen()) {

@@ -26,7 +26,7 @@ namespace rtype::engine {
 
     std::array<bool, KEY_COUNT> _currentStates{};
     std::array<bool, KEY_COUNT> _previousStates{};
-    
+
     std::unordered_map<sf::Keyboard::Key, KeyCode> _keyMap;
 
     void initKeyMap();

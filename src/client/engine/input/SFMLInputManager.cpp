@@ -28,10 +28,10 @@ namespace rtype::engine {
 
   void SFMLInputManager::handleEvent(const sf::Event& event) {
     if (event.is<sf::Event::KeyPressed>() || event.is<sf::Event::KeyReleased>()) {
-      auto it = _keyMap.find(event.getIf<sf::Event::KeyPressed>()->code);
-      if (it != _keyMap.end()) {
-        std::size_t index = static_cast<std::size_t>(it->second);
-        _currentStates[index] = (event.is<sf::Event::KeyPressed>());
+      auto key = event.getIf<sf::Event::KeyPressed>();
+      if (key != nullptr) {
+        auto it = _keyMap.find(key->code);
+        if (it != _keyMap.end()) _currentStates[static_cast<std::size_t>(it->second)] = (event.is<sf::Event::KeyPressed>());
       }
     }
   }
