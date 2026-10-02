@@ -1,5 +1,6 @@
 #include "SFMLWindow.hpp"
 #include "input/SFMLInputManager.hpp"
+#include "gfx/SFMLSprite.hpp"
 
 namespace rtype::engine {
   SFMLWindow::SFMLWindow(unsigned int width, unsigned int height, const std::string& title)
@@ -15,14 +16,6 @@ namespace rtype::engine {
     _window.close();
   }
 
-  void SFMLWindow::clear() {
-    _window.clear(sf::Color::Black);
-  }
-
-  void SFMLWindow::display() {
-    _window.display();
-  }
-
   void SFMLWindow::pollEvents(IInputManager& inputManager) {
     auto* sfmlInput = dynamic_cast<SFMLInputManager*>(&inputManager);
 
@@ -35,5 +28,18 @@ namespace rtype::engine {
   float SFMLWindow::getDeltaTime() {
     _deltaTime = _clock.restart().asSeconds();
     return _deltaTime;
+  }
+
+  void SFMLWindow::clear(const Color& color) {
+    _window.clear(sf::Color(color.r, color.g, color.b, color.a));
+  }
+
+  void SFMLWindow::draw(const ISprite& sprite) {
+    const auto* sfmlSprite = dynamic_cast<const SFMLSprite*>(&sprite);
+    if (sfmlSprite && sfmlSprite->getNativeSprite()) _window.draw(*sfmlSprite->getNativeSprite());
+  }
+
+  void SFMLWindow::display() {
+    _window.display();
   }
 }

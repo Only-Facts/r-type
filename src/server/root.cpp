@@ -10,6 +10,7 @@ std::size_t parse_arguments(int argc, const char *argv[]) {
     std::string flag(argv[i]);
 
     if (flag == "--help" || flag == "-h") return print_usage();
+    else return bad_usage();
   }
   return SUCCESS;
 }
@@ -17,8 +18,7 @@ std::size_t parse_arguments(int argc, const char *argv[]) {
 int main(int argc, const char *argv[]) {
   std::size_t bits = parse_arguments(argc, argv);
 
-  if (bits & 0b011) return FAIL;
-  if (bits & 0b100) return SUCCESS;
+  if (bits & (FAIL | ERROR | SUCCESS)) [[ unlikely ]] { return (bits & (FAIL | ERROR)) ? FAIL : SUCCESS; }
 
   try {
     return SUCCESS;

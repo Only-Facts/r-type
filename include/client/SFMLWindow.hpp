@@ -12,15 +12,17 @@ namespace rtype::engine {
 
     bool isOpen() const override;
     void close() override;
-    void clear() override;
-    void display() override;
     void pollEvents(IInputManager& inputManager) override;
     float getDeltaTime() override;
+
+    void clear(const Color& color = Color{0, 0, 0, 255}) override;
+    void draw(const ISprite& sprite) override;
+    void display() override;
 
   private:
     sf::RenderWindow _window;
     sf::Clock _clock;
-    float _deltaTime;
+    float _deltaTime{0.0f};
   };
 }
 
