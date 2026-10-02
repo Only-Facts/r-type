@@ -2,29 +2,29 @@
 #include <iostream>
 #include <ostream>
 
-inline void error(const char* msg) {
-  std::cerr << ":: ERROR - " << msg << std::endl;
+void error(const char *msg) {
+  std::cerr << BLACK << ":: " << BOLD << RED << "ERROR" << RESET << BLACK << " - " << msg << RESET << std::endl;
 }
  
-inline void warn(const char* msg) {
-  std::cerr << ":: WARN - " << msg << std::endl;
+void warn(const char *msg) {
+  std::cerr << BLACK << ":: " << BOLD << YELLOW << "WARN" << RESET << BLACK << " - " << msg << RESET << std::endl;
 }
  
-inline void info(const char* msg) {
-  std::cerr << ":: INFO - " << msg << std::endl;
+void info(const char *msg) {
+  std::cerr << BLACK << ":: " << BOLD << GREEN << "INFO" << RESET << BLACK << " - " << msg << RESET << std::endl;
 }
  
-inline void debug(const char* msg) {
-  std::cerr << ":: DEBUG - " << msg << std::endl;
+void debug(const char *msg) {
+  std::cerr << BLACK << ":: " << BOLD << CYAN << "DEBUG" << RESET << BLACK << " - " << msg << RESET << std::endl;
 }
 
 std::size_t print_usage(std::ostream& os = std::cout) {
   os <<
-    ":: Usage:\n" <<
-    "   r-type_server [OPTIONS]\n" <<
-    "   r-type_client [OPTIONS]\n\n" <<
-    ":: Options:\n" <<
-    "   -h, --help  Display this help message."
+    BLACK << ":: " << BOLD << BLUE << "Usage" << RESET << BLACK << ":\n" << RESET <<
+    "   " << BOLD << GREEN << "r-type_server" << RESET << " [OPTIONS]\n" <<
+    "   " << BOLD << GREEN << "r-type_client" << RESET << " [OPTIONS]\n\n" <<
+    BLACK << ":: " << BOLD << BLUE << "Options" << RESET << BLACK << ":\n" << RESET <<
+    "   " << BOLD << "-h, --help" << RESET << "  Display this help message."
     << std::endl;
   return HELP;
 }

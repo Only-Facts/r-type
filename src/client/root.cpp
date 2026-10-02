@@ -6,7 +6,6 @@
 #include "GameEngine.hpp"
 #include "SFMLWindow.hpp"
 #include <memory>
-#include <iostream>
 
 std::size_t parse_arguments(int argc, const char *argv[]) {
   (void)argc;
@@ -34,13 +33,14 @@ int main(int argc, const char *argv[]) {
 
     return SUCCESS;
   } catch (const rtype::RtypeError& e) {
-    std::cerr << "Error: " << e.what() << std::endl;
+    error(e.what());
     return ERROR;
   } catch (const std::exception& e) {
-    std::cerr << "Uncaught error: " << e.what() << std::endl;
+    std::string msg = "Uncaught error: ";
+    error(msg.append(e.what()).c_str());
     return FAIL;
   } catch (...) {
-    std::cerr << "Uncaught error." << std::endl;
+    error("Uncaught error.");
     return FAIL;
   }
 }
