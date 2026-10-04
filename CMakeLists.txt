@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(r-type_server LANGUAGES CXX)
-project(r-type_client LANGUAGES CXX)
+project(r-type LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# LIB CHECK
+
+find_package(SFML 3 COMPONENTS Graphics Window System REQUIRED)
 
 # FLAGS
 
@@ -31,4 +34,8 @@ target_include_directories(r-type_client PRIVATE "include/client/")
 
 # LIB
 
-target_link_libraries(r-type_client sfml-graphics sfml-window sfml-system)
+target_link_libraries(r-type_client PRIVATE
+  SFML::Graphics
+  SFML::Window
+  SFML::System
+)
