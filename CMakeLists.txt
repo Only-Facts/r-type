@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # LIB CHECK
 
-find_package(SFML 3 COMPONENTS Graphics Window System REQUIRED)
+find_package(SFML 3 COMPONENTS Graphics Window System Network REQUIRED)
 
 # FLAGS
 
@@ -34,8 +34,14 @@ target_include_directories(r-type_client PRIVATE "include/client/")
 
 # LIB
 
+target_link_libraries(r-type_server PRIVATE
+  SFML::System
+  SFML::Network
+)
+
 target_link_libraries(r-type_client PRIVATE
   SFML::Graphics
   SFML::Window
   SFML::System
+  SFML::Network
 )
