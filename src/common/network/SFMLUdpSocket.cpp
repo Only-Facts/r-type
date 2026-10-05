@@ -1,8 +1,8 @@
 #include "network/SFMLUdpSocket.hpp"
 #include "exception.hpp"
+#include "cli.hpp"
 #include <SFML/Network/Dns.hpp>
 #include <SFML/Network/IpAddress.hpp>
-#include <iostream>
 #include <optional>
 
 namespace rtype::network {
@@ -19,7 +19,7 @@ namespace rtype::network {
     auto addresses = sf::Dns::resolve(endpoint.address);
 
     if (!addresses || addresses->empty()) {
-      std::cerr << "Failed to resolve address: " << endpoint.address << std::endl;
+      error(("Failed to resolve address: " + std::string(endpoint.address)).c_str());
       return;
     }
 

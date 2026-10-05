@@ -4,6 +4,7 @@
 #include "gfx/SFMLTextureManager.hpp"
 #include "variables.hpp"
 #include "GameEngine.hpp"
+#include "GameScene.hpp"
 #include "SFMLWindow.hpp"
 #include <memory>
 
@@ -29,6 +30,15 @@ int main(int argc, const char *argv[]) {
     auto textureManager = std::make_unique<rtype::engine::SFMLTextureManager>();
 
     rtype::engine::GameEngine engine(std::move(window), std::move(inputManager), std::move(textureManager));
+
+    auto gameScene = std::make_shared<rtype::engine::GameScene>(
+      engine.getTextureManager(),
+      engine.getInputManager()
+    );
+
+    engine.getSceneManager().addScene("game", gameScene);
+    engine.getSceneManager().changeScene("game");
+
     engine.run();
 
     return SUCCESS;
