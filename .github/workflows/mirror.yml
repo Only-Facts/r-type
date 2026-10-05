@@ -29,7 +29,7 @@ jobs:
 
   check_program_compilation:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     container: epitechcontent/epitest-docker:latest
     needs: [check_repository]
     if: ${{ success() && needs.check_repository.outputs.same_repo == 'true' }}
@@ -38,6 +38,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ""
+
+      - name: Build and Install SFML 3.1.0
+        run: |
+          git clone --branch 3.1.0 --depth 1 https://github.com/SFML/SFML.git /tmp/SFML
+          cmake -S /tmp/SFML -B /tmp/SFML/build -DCMAKE_BUILD_TYPE=Release -DSFML_BUILD_EXAMPLES=OFF -DSFML_BUILD_DOC=OFF -DSFML_BUILD_TEST_SUITE=OFF
+          cmake --build /tmp/SFML/build -j $(nproc)
+          cmake --install /tmp/SFML/build
+          ldconfig
 
       - name: Compile Repo
         run: |
