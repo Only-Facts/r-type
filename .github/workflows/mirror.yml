@@ -59,7 +59,12 @@ jobs:
           fi
 
           git clone --branch 3.1.0 --depth 1 https://github.com/SFML/SFML.git /tmp/SFML
-          cmake -S /tmp/SFML -B /tmp/SFML/build -DCMAKE_BUILD_TYPE=Release -DSFML_BUILD_EXAMPLES=OFF -DSFML_BUILD_DOC=OFF -DSFML_BUILD_TEST_SUITE=OFF
+          cmake -S /tmp/SFML -B /tmp/SFML/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DSFML_BUILD_EXAMPLES=OFF \
+            -DSFML_BUILD_DOC=OFF \
+            -DSFML_BUILD_TEST_SUITE=OFF
           cmake --build /tmp/SFML/build -j $(nproc)
           cmake --install /tmp/SFML/build
           ldconfig
