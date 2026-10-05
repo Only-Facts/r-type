@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # LIB CHECK
 
-find_package(SFML 3 COMPONENTS Graphics Window System Network REQUIRED)
+find_package(SFML 3.1 COMPONENTS Graphics Window System Network REQUIRED)
 
 # FLAGS
 
