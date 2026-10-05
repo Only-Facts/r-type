@@ -24,6 +24,7 @@ namespace rtype::engine {
 
   void SFMLInputManager::update() {
     _previousStates = _currentStates;
+    _currentStates.fill(false);
   }
 
   void SFMLInputManager::handleEvent(const sf::Event& event) {
