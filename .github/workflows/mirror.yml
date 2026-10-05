@@ -41,6 +41,12 @@ jobs:
 
       - name: Build and Install SFML 3.1.0
         run: |
+          if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y libmbedtls-dev
+          elif command -v dnf &> /dev/null; then
+            dnf install -y mbedtls-devel
+          fi
+
           git clone --branch 3.1.0 --depth 1 https://github.com/SFML/SFML.git /tmp/SFML
           cmake -S /tmp/SFML -B /tmp/SFML/build -DCMAKE_BUILD_TYPE=Release -DSFML_BUILD_EXAMPLES=OFF -DSFML_BUILD_DOC=OFF -DSFML_BUILD_TEST_SUITE=OFF
           cmake --build /tmp/SFML/build -j $(nproc)
