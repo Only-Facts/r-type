@@ -4,12 +4,14 @@
 #include "gfx/GfxTypes.hpp"
 #include "gfx/ISprite.hpp"
 #include <memory>
+#include <cstdint>
 
 namespace rtype::engine {
   struct TransformComponent {
     Vector2f position{0.0f, 0.0f};
     float rotation{0.0f};
     Vector2f scale{1.0f, 1.0f};
+    Vector2f targetPosition{0.0f, 0.0f};
   };
 
   struct VelocityComponent {
@@ -18,6 +20,11 @@ namespace rtype::engine {
 
   struct SpriteComponent {
     std::shared_ptr<ISprite> sprite{nullptr};
+  };
+
+  struct NetworkIdComponent {
+    std::uint32_t netId{0};
+    bool isLocalPlayer{false};
   };
 }
 
