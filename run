@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+SERVER_FLAGS="${SERVER_FLAGS:-}"
+CLIENT_FLAGS="${CLIENT_FLAGS:-}"
+
 C_DIM="\e[0;90m"
 C_INFO="\e[0;1;92m"
 C_WARN="\e[0;1;93m"
@@ -83,13 +86,13 @@ _cleanup() {
 trap _cleanup SIGINT EXIT
 
 for i in {1..4}; do
-  _info "Starting ${C_PATH}r-type_client $i${C_DIM}..."
-  ./build/r-type_client >"$LOG_TEMPLATE$i.log" 2>&1 &
+  _info "Starting ${C_PATH}r-type_client $SERVER_FLAGS $i${C_DIM}..."
+  ./build/r-type_client $CLIENT_FLAGS >"$LOG_TEMPLATE$i.log" 2>&1 &
   client_pids[$!]=$i
 done
 
-_info "Starting ${C_PATH}r-type_server${C_DIM}..."
-./build/r-type_server &
+_info "Starting ${C_PATH}r-type_server $SERVER_FLAGS${C_DIM}..."
+./build/r-type_server $SERVER_FLAGS &
 SERVER_PID=$!
 
 while kill -0 "$SERVER_PID" 2>/dev/null; do
