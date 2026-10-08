@@ -2,8 +2,11 @@
 #include "exception.hpp"
 #include "variables.hpp"
 #include "network/SFMLUdpSocket.hpp"
+#include "ServerNetworkManager.hpp"
+#include <chrono>
 #include <cstddef>
 #include <string>
+#include <thread>
 
 #define DEFAULT_PORT 4242
 
@@ -35,17 +38,17 @@ int main(int argc, const char *argv[]) {
 
     info(("Server listening on port " + std::string(BOLD) + std::string(ITALIC) + std::string(BLUE) + std::to_string(serverSocket.getLocalPort())).c_str());
 
-    bool isRunning = true;
-    rtype::network::PacketData incomingData;
-    rtype::network::Endpoint sender;
+    rtype::server::ServerNetworkManager serverNet(serverSocket);
+    auto lastTime = std::chrono::high_resolution_clock::now();
 
-    while (isRunning) {
-      while (serverSocket.receive(incomingData, sender)) {
-        std::string msg = "Received " + std::to_string(incomingData.size()) +
-          " bytes from " + sender.address + ":" + std::to_string(sender.port);
+    while (true) {
+      auto now = std::chrono::high_resolution_clock::now();
+      float dt = std::chrono::duration<float>(now - lastTime).count();
+      lastTime = now;
 
-        info(msg.c_str());
-      }
+      serverNet.update(dt);
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
     return SUCCESS;
   } catch (const rtype::RtypeError& e) {

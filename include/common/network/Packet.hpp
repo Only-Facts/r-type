@@ -12,14 +12,6 @@ namespace rtype::network {
     GameState = 0x20
   };
 
-  #pragma pack(push, 1)
-  struct PacketHeader {
-    Command command;
-    std::uint16_t payloadSize;
-    std::uint8_t reserved;
-  };
-  #pragma pack(pop)
-
   using PacketData = std::vector<std::uint8_t>;
 }
 
