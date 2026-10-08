@@ -77,6 +77,17 @@ _cleanup() {
     fi
 
     local id=${client_pids[$pid]}
+    local log_file="$LOG_TEMPLATE$id.log"
+
+    _info "Client $id (PID: ${C_PATH}$pid${C_DIM}) stopped!"
+    if [ -f "$log_file" ]; then
+      echo -e "${C_PATH}tail -n 15 $log_file${C_RESET}"
+      tail -n 15 "$log_file"
+      echo -e "${C_DIM}--- EOF --${C_RESET}"
+    else
+      _warn "$log_file not found"
+    fi
+
     rm -f "$LOG_TEMPLATE$id.log"
   done
 

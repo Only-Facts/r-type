@@ -125,7 +125,7 @@ namespace rtype::client {
       auto sprite = std::make_shared<engine::SFMLSprite>(tex);
 
       bool isLocal = (netId == _localNetId);
-      _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, {2.0f, 2.0f}, {x, y}});
+      _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
