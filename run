@@ -45,17 +45,17 @@ SERVER_PID=0
 
 _read_logs() {
   local pid=$1
-  local log_file=$2
-  local id=${client_pids[$pid]}
+  local id=$2
+  local log_file="$LOG_TEMPLATE$id.log"
 
   echo
   _info "Client $id (PID: ${C_PATH}$pid${C_DIM}) stopped!"
   if [ -f "$log_file" ]; then
-    echo -e "${C_DIM}\$ ${C_CMD}tail -n 15 $log_file${C_RESET}\n"
+    echo -e "${C_DIM}\$ ${C_CMD}tail -n 15 ${C_DIM}$log_file${C_RESET}\n"
     tail -n 15 "$log_file"
     echo -e "\n${C_DIM}--- ${C_EOF}EOF${C_DIM} ---${C_RESET}"
   else
-    _warn "$log_file not found"
+    _warn "${C_PATH}$log_file${C_DIM} not found"
   fi
 }
 
@@ -65,7 +65,7 @@ _client_logs() {
       local id=${client_pids[$pid]}
       local log_file="$LOG_TEMPLATE$id.log"
 
-      _read_logs "$pid" "$LOG_TEMPLATE$id.log"
+      _read_logs "$pid" "$id"
 
       unset "client_pids[$pid]"
     fi
@@ -87,7 +87,8 @@ _cleanup() {
       kill "$pid" 2>/dev/null
     fi
 
-    _read_logs "$pid" "$LOG_TEMPLATE$id.log"
+    local id=${client_pids[$pid]:-}
+    _read_logs "$pid" "$id"
 
     rm -f "$LOG_TEMPLATE$id.log"
   done
