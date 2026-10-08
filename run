@@ -98,7 +98,7 @@ _cleanup() {
 trap _cleanup SIGINT EXIT
 
 for i in {1..4}; do
-  echo -e "${C_DIM}\$ ${C_CMD}r-type_client $CLIENT_FLAGS${C_DIM} >"$LOG_TEMPLATE$i.log" 2>&1 &${C_RESET}"
+  echo -e "${C_DIM}\$ ${C_CMD}r-type_client $CLIENT_FLAGS${C_DIM} >$LOG_TEMPLATE$i.log 2>&1 &${C_RESET}"
   ./build/r-type_client $CLIENT_FLAGS >"$LOG_TEMPLATE$i.log" 2>&1 &
   client_pids[$!]=$i
 done
