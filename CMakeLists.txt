@@ -38,7 +38,7 @@ if(NOT SFML_FOUND)
   FetchContent_Declare(
         SFML
         GIT_REPOSITORY https://github.com/SFML/SFML.git
-        GIT_TAG        3.1.0
+        GIT_TAG 3.1.0
     )
 
   set(SFML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
