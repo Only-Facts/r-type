@@ -8,7 +8,9 @@
 #include "gfx/ITextureManager.hpp"
 #include "gfx/IBackground.hpp"
 #include "gfx/Starfield.hpp"
+#include "game/AnimationSystem.hpp"
 #include "game/ProjectileSystem.hpp"
+#include "game/SFMLEnemySpriteFactory.hpp"
 #include "game/SFMLMissileSpriteFactory.hpp"
 #include "game/SFMLPlayerSpriteFactory.hpp"
 #include "input/IInputManager.hpp"
@@ -25,10 +27,12 @@ namespace rtype::engine {
         _inputMgr(inputMgr),
         _playerSpriteFactory(_texMgr),
         _missileSpriteFactory(_texMgr),
-        _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory),
+        _enemySpriteFactory(_texMgr),
+        _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory, _enemySpriteFactory),
         _host(host),
         _port(port) {
       _systems.push_back(std::make_unique<client::ProjectileSystem>());
+      _systems.push_back(std::make_unique<client::AnimationSystem>());
     }
 
     ~GameScene() override = default;
@@ -78,6 +82,7 @@ namespace rtype::engine {
     IInputManager& _inputMgr;
     client::SFMLPlayerSpriteFactory _playerSpriteFactory;
     client::SFMLMissileSpriteFactory _missileSpriteFactory;
+    client::SFMLEnemySpriteFactory _enemySpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
 

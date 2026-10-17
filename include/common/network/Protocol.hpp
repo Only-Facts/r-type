@@ -45,6 +45,15 @@ namespace rtype::network {
     float velX;
     float velY;
   };
+
+#pragma pack(push, 1)
+  struct EnemyStateData {
+    NetworkId enemyId;
+    std::uint8_t enemyType;
+    float posX;
+    float posY;
+  };
+#pragma pack(pop)
 }
 
 #endif // !PROTOCOL_HPP

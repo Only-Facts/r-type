@@ -30,6 +30,7 @@ namespace rtype::engine {
     std::unordered_map<sf::Keyboard::Key, KeyCode> _keyMap;
 
     void initKeyMap();
+    void setKeyState(sf::Keyboard::Key key, bool isPressed);
   };
 }
 

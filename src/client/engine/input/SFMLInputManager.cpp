@@ -24,17 +24,20 @@ namespace rtype::engine {
 
   void SFMLInputManager::update() {
     _previousStates = _currentStates;
-    _currentStates.fill(false);
   }
 
   void SFMLInputManager::handleEvent(const sf::Event& event) {
-    if (event.is<sf::Event::KeyPressed>() || event.is<sf::Event::KeyReleased>()) {
-      auto key = event.getIf<sf::Event::KeyPressed>();
-      if (key != nullptr) {
-        auto it = _keyMap.find(key->code);
-        if (it != _keyMap.end()) _currentStates[static_cast<std::size_t>(it->second)] = (event.is<sf::Event::KeyPressed>());
-      }
-    }
+    if (const auto* pressed = event.getIf<sf::Event::KeyPressed>())
+      setKeyState(pressed->code, true);
+    else if (const auto* released = event.getIf<sf::Event::KeyReleased>())
+      setKeyState(released->code, false);
+    else if (event.is<sf::Event::FocusLost>())
+      _currentStates.fill(false);
+  }
+
+  void SFMLInputManager::setKeyState(sf::Keyboard::Key key, bool isPressed) {
+    auto it = _keyMap.find(key);
+    if (it != _keyMap.end()) _currentStates[static_cast<std::size_t>(it->second)] = isPressed;
   }
 
   bool SFMLInputManager::isKeyPressed(KeyCode key) const {

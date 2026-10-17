@@ -25,6 +25,22 @@ namespace rtype::engine {
     std::uint32_t ownerId{0};
   };
 
+  struct EnemyComponent {
+    std::uint8_t type{0};
+  };
+
+  struct AnimationComponent {
+    int frameWidth{0};
+    int frameHeight{0};
+    int row{0};
+    int firstColumn{0};
+    int frameCount{1};
+    float frameDuration{0.1f};
+    bool pingPong{false};
+    float elapsed{0.0f};
+    int step{0};
+  };
+
   struct NetworkIdComponent {
     std::uint32_t netId{0};
     bool isLocalPlayer{false};

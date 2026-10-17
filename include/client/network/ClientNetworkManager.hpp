@@ -7,9 +7,11 @@
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
 #include "exception.hpp"
+#include "game/IEnemySpriteFactory.hpp"
 #include "game/IMissileSpriteFactory.hpp"
 #include "game/IPlayerSpriteFactory.hpp"
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rtype::client {
   class ClientNetworkManager {
@@ -17,11 +19,13 @@ namespace rtype::client {
     ClientNetworkManager(network::INetworkSocket& socket,
                          engine::Registry& registry,
                          IPlayerSpriteFactory& playerSpriteFactory,
-                         IMissileSpriteFactory& missileSpriteFactory)
+                         IMissileSpriteFactory& missileSpriteFactory,
+                         IEnemySpriteFactory& enemySpriteFactory)
       : _socket(socket),
         _registry(registry),
         _playerSpriteFactory(playerSpriteFactory),
-        _missileSpriteFactory(missileSpriteFactory) {}
+        _missileSpriteFactory(missileSpriteFactory),
+        _enemySpriteFactory(enemySpriteFactory) {}
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -132,6 +136,7 @@ namespace rtype::client {
             reader >> state;
             updateEntityState(state);
           }
+          readEnemyStates(reader);
           break;
         }
         default: break;
@@ -168,6 +173,53 @@ namespace rtype::client {
       _networkToEcs[missile.missileId] = entity;
     }
 
+    void readEnemyStates(network::PacketStreamReader& reader) {
+      std::uint16_t count;
+      reader >> count;
+
+      std::unordered_set<network::NetworkId> receivedIds;
+      for (std::uint16_t i = 0; i < count; ++i) {
+        network::EnemyStateData state{};
+        reader >> state;
+        updateEnemyState(state);
+        receivedIds.insert(state.enemyId);
+      }
+
+      std::erase_if(_enemyIds, [&](network::NetworkId enemyId) {
+        if (receivedIds.contains(enemyId)) return false;
+        destroyNetworkEntity(enemyId);
+        return true;
+      });
+    }
+
+    void updateEnemyState(const network::EnemyStateData& state) {
+      auto it = _networkToEcs.find(state.enemyId);
+      if (it == _networkToEcs.end()) {
+        spawnEnemy(state);
+        return;
+      }
+
+      auto* transform = _registry.getComponent<engine::TransformComponent>(it->second);
+      if (transform) transform->targetPosition = {state.posX, state.posY};
+    }
+
+    void spawnEnemy(const network::EnemyStateData& state) {
+      if (state.enemyType >= static_cast<std::uint8_t>(game::EnemyType::Count)) return;
+
+      const auto type = static_cast<game::EnemyType>(state.enemyType);
+      auto entity = _registry.createEntity();
+      auto sprite = _enemySpriteFactory.createSprite(type);
+
+      _registry.addComponent<engine::TransformComponent>(entity, {{state.posX, state.posY}, 0.0f, _enemySpriteFactory.getSpriteScale(), {state.posX, state.posY}});
+      _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
+      _registry.addComponent<engine::AnimationComponent>(entity, _enemySpriteFactory.createAnimation(type));
+      _registry.addComponent<engine::EnemyComponent>(entity, {state.enemyType});
+      _registry.addComponent<engine::NetworkIdComponent>(entity, {state.enemyId, false});
+
+      _networkToEcs[state.enemyId] = entity;
+      _enemyIds.insert(state.enemyId);
+    }
+
     void forgetDestroyedEntities() {
       std::erase_if(_networkToEcs, [this](const auto& entry) {
         return !_registry.getComponent<engine::NetworkIdComponent>(entry.second);
@@ -197,8 +249,10 @@ namespace rtype::client {
     engine::Registry& _registry;
     IPlayerSpriteFactory& _playerSpriteFactory;
     IMissileSpriteFactory& _missileSpriteFactory;
+    IEnemySpriteFactory& _enemySpriteFactory;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, engine::Entity> _networkToEcs;
+    std::unordered_set<network::NetworkId> _enemyIds;
 
     network::NetworkId _localNetId{0};
     std::uint32_t _outgoingSeq{1};

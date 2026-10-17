@@ -6,6 +6,7 @@
 #include "network/PacketStream.hpp"
 #include "exception.hpp"
 #include "GameConstants.hpp"
+#include "EnemyManager.hpp"
 #include "MissileManager.hpp"
 #include <unordered_map>
 
@@ -28,6 +29,7 @@ namespace rtype::server {
       processIncomingPackets();
       updatePhysics(dt);
       updateMissiles(dt);
+      if (!_clients.empty()) _enemyManager.update(dt);
       broadcastGameState();
     }
 
@@ -139,7 +141,7 @@ namespace rtype::server {
       auto it = _clients.find(netId);
       if (it == _clients.end()) return;
 
-      float speed = 300.0f;
+      const float speed = game::PLAYER_SPEED;
       it->second.velX = 0.0f;
       it->second.velY = 0.0f;
       if (up) it->second.velY -= speed;
@@ -192,12 +194,21 @@ namespace rtype::server {
         writer << state;
       }
 
+      const auto& enemies = _enemyManager.getEnemies();
+      writer << static_cast<std::uint16_t>(enemies.size());
+
+      for (const auto& [id, enemy] : enemies) {
+        network::EnemyStateData state{enemy.id, static_cast<std::uint8_t>(enemy.type), enemy.posX, enemy.posY};
+        writer << state;
+      }
+
       for (const auto& [id, client] : _clients)
         _socket.send(writer.getBuffer(), client.endpoint);
     }
 
     network::INetworkSocket& _socket;
     MissileManager _missileManager;
+    EnemyManager _enemyManager;
     std::unordered_map<network::NetworkId, ConnectedClient> _clients;
     network::NetworkId _nextNetId{1};
     std::uint32_t _outgoingSeq{1};
