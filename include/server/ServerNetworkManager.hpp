@@ -27,6 +27,16 @@ namespace rtype::server {
     }
 
   private:
+    static constexpr float SPAWN_X = 200.0f;
+    static constexpr float SPAWN_FIRST_Y = 250.0f;
+    static constexpr float SPAWN_SPACING_Y = 150.0f;
+    static constexpr network::NetworkId SPAWN_SLOT_COUNT = 4;
+
+    static float getSpawnY(network::NetworkId netId) {
+      const network::NetworkId slot = (netId - 1) % SPAWN_SLOT_COUNT;
+      return SPAWN_FIRST_Y + static_cast<float>(slot) * SPAWN_SPACING_Y;
+    }
+
     void processIncomingPackets() {
       network::PacketData data;
       network::Endpoint sender;
@@ -50,7 +60,7 @@ namespace rtype::server {
 
     void handleConnect(const network::Endpoint& sender) {
       network::NetworkId netId = _nextNetId++;
-      ConnectedClient client{netId, sender, 200.0f + (netId * 50.0f), 300.0f, 0.0f, 0.0f};
+      ConnectedClient client{netId, sender, SPAWN_X, getSpawnY(netId), 0.0f, 0.0f};
       _clients[netId] = client;
 
       {
