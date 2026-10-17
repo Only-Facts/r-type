@@ -2,21 +2,34 @@
 #define GAMESCENE_HPP
 
 #include "scene/IScene.hpp"
+#include "ecs/ISystem.hpp"
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
 #include "gfx/ITextureManager.hpp"
 #include "gfx/IBackground.hpp"
 #include "gfx/Starfield.hpp"
+#include "game/ProjectileSystem.hpp"
+#include "game/SFMLMissileSpriteFactory.hpp"
 #include "game/SFMLPlayerSpriteFactory.hpp"
 #include "input/IInputManager.hpp"
 #include "network/SFMLUdpSocket.hpp"
 #include "network/ClientNetworkManager.hpp"
+#include <memory>
+#include <vector>
 
 namespace rtype::engine {
   class GameScene : public IScene {
   public:
     GameScene(ITextureManager& texMgr, IInputManager& inputMgr, std::string host = "127.0.0.1", unsigned short port = 4242)
-      : _texMgr(texMgr), _inputMgr(inputMgr), _playerSpriteFactory(_texMgr), _netMgr(_socket, _registry, _playerSpriteFactory), _host(host), _port(port) {}
+      : _texMgr(texMgr),
+        _inputMgr(inputMgr),
+        _playerSpriteFactory(_texMgr),
+        _missileSpriteFactory(_texMgr),
+        _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory),
+        _host(host),
+        _port(port) {
+      _systems.push_back(std::make_unique<client::ProjectileSystem>());
+    }
 
     ~GameScene() override = default;
 
@@ -31,9 +44,13 @@ namespace rtype::engine {
       bool down = _inputMgr.isKeyPressed(KeyCode::Down);
       bool left = _inputMgr.isKeyPressed(KeyCode::Left);
       bool right = _inputMgr.isKeyPressed(KeyCode::Right);
+      bool shoot = _inputMgr.isKeyPressed(KeyCode::Space);
 
-      _netMgr.sendInputs(up, down, left, right);
+      _netMgr.sendInputs(up, down, left, right, shoot);
       _netMgr.update(dt);
+
+      for (auto& system : _systems)
+        system->update(_registry, dt);
 
       _registry.view<TransformComponent>([&](Entity e, TransformComponent& transform) {
         auto* spr = _registry.getComponent<SpriteComponent>(e);
@@ -56,9 +73,11 @@ namespace rtype::engine {
   private:
     Registry _registry;
     std::unique_ptr<IBackground> _background{std::make_unique<Starfield>()};
+    std::vector<std::unique_ptr<ISystem>> _systems;
     ITextureManager& _texMgr;
     IInputManager& _inputMgr;
     client::SFMLPlayerSpriteFactory _playerSpriteFactory;
+    client::SFMLMissileSpriteFactory _missileSpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
 

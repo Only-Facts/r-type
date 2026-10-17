@@ -9,8 +9,6 @@
 #include <vector>
 
 namespace rtype::engine {
-  // Scrolling parallax background made of three layers of stars.
-  // Scrolling depends on the elapsed time only, never on the CPU speed.
   class Starfield : public IBackground {
   public:
     Starfield() = default;
@@ -22,23 +20,23 @@ namespace rtype::engine {
   private:
     struct Star {
       Vector2f position;
-      float speed;       // pixels per second
-      float size;        // pixels
+      float speed;
+      float size;
       std::uint8_t brightness;
     };
 
     struct LayerConfig {
-      float speed;       // pixels per second on a 1080p window
-      float size;        // pixels on a 1080p window
+      float speed;
+      float size;
       std::uint8_t brightness;
       std::size_t starCount;
     };
 
     static constexpr float REFERENCE_WINDOW_HEIGHT = 1080.0f;
     static constexpr std::array<LayerConfig, 3> LAYERS{{
-      {30.0f, 2.0f, 90, 120},   // far layer: slow and dim
-      {80.0f, 3.0f, 170, 70},   // middle layer
-      {180.0f, 4.0f, 255, 35},  // near layer: fast and bright
+      {30.0f, 2.0f, 90, 120},
+      {80.0f, 3.0f, 170, 70},
+      {180.0f, 4.0f, 255, 35},
     }};
 
     void generateStars(const Vector2u& windowSize);

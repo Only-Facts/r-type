@@ -4,7 +4,6 @@
 #include "IWindow.hpp"
 
 namespace rtype::engine {
-  // Anything drawn behind the game entities (starfield, planets, scrolling level...).
   class IBackground {
   public:
     virtual ~IBackground() = default;

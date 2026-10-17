@@ -28,7 +28,6 @@ namespace rtype::client {
     return engine::Vector2f{SPRITE_SCALE, SPRITE_SCALE};
   }
 
-  // Player 1 -> row 0, player 2 -> row 1, ... then it loops.
   int SFMLPlayerSpriteFactory::getSheetRowForPlayer(network::NetworkId playerId) const {
     if (playerId == 0) return 0;
     return static_cast<int>((playerId - 1) % static_cast<network::NetworkId>(_sheet.getRowCount()));

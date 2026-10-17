@@ -7,8 +7,6 @@
 #include <memory>
 
 namespace rtype::client {
-  // Creates the sprite used to draw a player's ship.
-  // Lets the network layer spawn players without knowing about SFML or sprite sheets.
   class IPlayerSpriteFactory {
   public:
     virtual ~IPlayerSpriteFactory() = default;

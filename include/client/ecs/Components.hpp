@@ -21,6 +21,9 @@ namespace rtype::engine {
   struct SpriteComponent {
     std::shared_ptr<ISprite> sprite{nullptr};
   };
+  struct ProjectileComponent {
+    std::uint32_t ownerId{0};
+  };
 
   struct NetworkIdComponent {
     std::uint32_t netId{0};

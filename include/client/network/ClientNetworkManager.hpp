@@ -6,6 +6,8 @@
 #include "network/PacketStream.hpp"
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
+#include "exception.hpp"
+#include "game/IMissileSpriteFactory.hpp"
 #include "game/IPlayerSpriteFactory.hpp"
 #include <unordered_map>
 
@@ -14,8 +16,12 @@ namespace rtype::client {
   public:
     ClientNetworkManager(network::INetworkSocket& socket,
                          engine::Registry& registry,
-                         IPlayerSpriteFactory& playerSpriteFactory)
-      : _socket(socket), _registry(registry), _playerSpriteFactory(playerSpriteFactory) {}
+                         IPlayerSpriteFactory& playerSpriteFactory,
+                         IMissileSpriteFactory& missileSpriteFactory)
+      : _socket(socket),
+        _registry(registry),
+        _playerSpriteFactory(playerSpriteFactory),
+        _missileSpriteFactory(missileSpriteFactory) {}
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -31,9 +37,12 @@ namespace rtype::client {
 
     void update(float dt) {
       processIncomingPackets();
+      forgetDestroyedEntities();
       if (!_isConnected) return;
 
-      _registry.view<engine::TransformComponent>([dt](engine::Entity, engine::TransformComponent& transform) {
+      _registry.view<engine::TransformComponent>([this, dt](engine::Entity entity, engine::TransformComponent& transform) {
+        if (_registry.getComponent<engine::ProjectileComponent>(entity)) return;
+
         float lerpFactor = 15.0f * dt;
         if (lerpFactor > 1.0f) lerpFactor = 1.0f;
         transform.position.x += (transform.targetPosition.x - transform.position.x) * lerpFactor;
@@ -41,7 +50,7 @@ namespace rtype::client {
       });
     }
 
-    void sendInputs(bool up, bool down, bool left, bool right) {
+    void sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
       if (!_isConnected) return;
 
       network::PacketHeader header{
@@ -49,7 +58,7 @@ namespace rtype::client {
       };
 
       network::PacketStreamWriter payload;
-      payload << _localNetId << up << down << left << right;
+      payload << _localNetId << up << down << left << right << shoot;
 
       header.payloadSize = static_cast<std::uint16_t>(payload.getBuffer().size());
 
@@ -71,48 +80,61 @@ namespace rtype::client {
       network::Endpoint sender;
 
       while (_socket.receive(data, sender)) {
-        if (data.size() < sizeof(network::PacketHeader)) continue;
-
-        network::PacketStreamReader reader(data);
-        network::PacketHeader header{};
-        reader >> header;
-
-        if (header.magic != network::PROTOCOL_MAGIC) continue;
-        if (header.sequence <= _lastIncomingSeq && header.type == network::PacketType::GameStateSync) continue;
-
-        _lastIncomingSeq = header.sequence;
-
-        switch (header.type) {
-          case network::PacketType::ConnectAck: {
-            reader >> _localNetId;
-            _isConnected = true;
-            break;
-          }
-          case network::PacketType::SpawnPlayer: {
-            network::NetworkId netId;
-            float x, y;
-            reader >> netId >> x >> y;
-            spawnPlayer(netId, x, y);
-            break;
-          }
-          case network::PacketType::DestroyEntity: {
-            network::NetworkId netId;
-            reader >> netId;
-            destroyPlayer(netId);
-            break;
-          }
-          case network::PacketType::GameStateSync: {
-            std::uint16_t count;
-            reader >> count;
-            for (std::uint16_t i = 0; i < count; ++i) {
-              network::EntityStateData state{};
-              reader >> state;
-              updateEntityState(state);
-            }
-            break;
-          }
-          default: break;
+        try {
+          handlePacket(data);
+        } catch (const RtypeError&) {
         }
+      }
+    }
+
+    void handlePacket(const network::PacketData& data) {
+      if (data.size() < sizeof(network::PacketHeader)) return;
+
+      network::PacketStreamReader reader(data);
+      network::PacketHeader header{};
+      reader >> header;
+
+      if (header.magic != network::PROTOCOL_MAGIC) return;
+      if (header.sequence <= _lastIncomingSeq && header.type == network::PacketType::GameStateSync) return;
+
+      _lastIncomingSeq = header.sequence;
+
+      switch (header.type) {
+        case network::PacketType::ConnectAck: {
+          reader >> _localNetId;
+          _isConnected = true;
+          break;
+        }
+        case network::PacketType::SpawnPlayer: {
+          network::NetworkId netId;
+          float x, y;
+          reader >> netId >> x >> y;
+          spawnPlayer(netId, x, y);
+          break;
+        }
+        case network::PacketType::SpawnMissile: {
+          network::MissileSpawnData missile{};
+          reader >> missile;
+          spawnMissile(missile);
+          break;
+        }
+        case network::PacketType::DestroyEntity: {
+          network::NetworkId netId;
+          reader >> netId;
+          destroyNetworkEntity(netId);
+          break;
+        }
+        case network::PacketType::GameStateSync: {
+          std::uint16_t count;
+          reader >> count;
+          for (std::uint16_t i = 0; i < count; ++i) {
+            network::EntityStateData state{};
+            reader >> state;
+            updateEntityState(state);
+          }
+          break;
+        }
+        default: break;
       }
     }
 
@@ -131,7 +153,28 @@ namespace rtype::client {
       _networkToEcs[netId] = entity;
     }
 
-    void destroyPlayer(network::NetworkId netId) {
+    void spawnMissile(const network::MissileSpawnData& missile) {
+      if (_networkToEcs.find(missile.missileId) != _networkToEcs.end()) return;
+
+      auto entity = _registry.createEntity();
+      auto sprite = _missileSpriteFactory.createSprite();
+
+      _registry.addComponent<engine::TransformComponent>(entity, {{missile.posX, missile.posY}, 0.0f, _missileSpriteFactory.getSpriteScale(), {missile.posX, missile.posY}});
+      _registry.addComponent<engine::VelocityComponent>(entity, {{missile.velX, missile.velY}});
+      _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
+      _registry.addComponent<engine::ProjectileComponent>(entity, {missile.ownerId});
+      _registry.addComponent<engine::NetworkIdComponent>(entity, {missile.missileId, false});
+
+      _networkToEcs[missile.missileId] = entity;
+    }
+
+    void forgetDestroyedEntities() {
+      std::erase_if(_networkToEcs, [this](const auto& entry) {
+        return !_registry.getComponent<engine::NetworkIdComponent>(entry.second);
+      });
+    }
+
+    void destroyNetworkEntity(network::NetworkId netId) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
         _registry.destroyEntity(it->second);
@@ -153,6 +196,7 @@ namespace rtype::client {
     network::INetworkSocket& _socket;
     engine::Registry& _registry;
     IPlayerSpriteFactory& _playerSpriteFactory;
+    IMissileSpriteFactory& _missileSpriteFactory;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, engine::Entity> _networkToEcs;
 

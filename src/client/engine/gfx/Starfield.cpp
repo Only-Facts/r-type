@@ -30,7 +30,6 @@ namespace rtype::engine {
     _hasStars = true;
   }
 
-  // Moves a star to the left; once it leaves the screen it reappears on the right at a random height.
   void Starfield::scrollStar(Star& star, float deltaTime) {
     star.position.x -= star.speed * deltaTime;
 

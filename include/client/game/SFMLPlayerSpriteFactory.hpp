@@ -6,8 +6,6 @@
 #include "gfx/SpriteSheet.hpp"
 
 namespace rtype::client {
-  // Draws each player with its own color, taken from assets/sprites/player_ships.png
-  // (5 columns of banking frames x 5 rows, one row per player).
   class SFMLPlayerSpriteFactory : public IPlayerSpriteFactory {
   public:
     explicit SFMLPlayerSpriteFactory(engine::ITextureManager& textureManager);
