@@ -14,9 +14,11 @@ namespace rtype::engine {
     virtual void close() = 0;
     virtual void pollEvents(IInputManager& inputManager) = 0;
     virtual float getDeltaTime() = 0;
+    virtual Vector2u getSize() const = 0;
 
     virtual void clear(const Color& color = Color{0, 0, 0, 255}) = 0;
     virtual void draw(const ISprite& sprite) = 0;
+    virtual void drawRectangle(const Vector2f& position, const Vector2f& size, const Color& color) = 0;
     virtual void display() = 0;
   };
 }

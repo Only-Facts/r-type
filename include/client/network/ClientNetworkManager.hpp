@@ -6,8 +6,7 @@
 #include "network/PacketStream.hpp"
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
-#include "gfx/SFMLSprite.hpp"
-#include "gfx/ITextureManager.hpp"
+#include "game/IPlayerSpriteFactory.hpp"
 #include <unordered_map>
 
 namespace rtype::client {
@@ -15,8 +14,8 @@ namespace rtype::client {
   public:
     ClientNetworkManager(network::INetworkSocket& socket,
                          engine::Registry& registry,
-                         engine::ITextureManager& texMgr)
-      : _socket(socket), _registry(registry), _texMgr(texMgr) {}
+                         IPlayerSpriteFactory& playerSpriteFactory)
+      : _socket(socket), _registry(registry), _playerSpriteFactory(playerSpriteFactory) {}
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -93,13 +92,13 @@ namespace rtype::client {
             network::NetworkId netId;
             float x, y;
             reader >> netId >> x >> y;
-            spawnRemotePlayer(netId, x, y);
+            spawnPlayer(netId, x, y);
             break;
           }
           case network::PacketType::DestroyEntity: {
             network::NetworkId netId;
             reader >> netId;
-            destroyRemotePlayer(netId);
+            destroyPlayer(netId);
             break;
           }
           case network::PacketType::GameStateSync: {
@@ -117,15 +116,14 @@ namespace rtype::client {
       }
     }
 
-    void spawnRemotePlayer(network::NetworkId netId, float x, float y) {
+    void spawnPlayer(network::NetworkId netId, float x, float y) {
       if (_networkToEcs.find(netId) != _networkToEcs.end()) return;
 
       auto entity = _registry.createEntity();
-      auto tex = _texMgr.loadTexture("assets/player.png");
-      auto sprite = std::make_shared<engine::SFMLSprite>(tex);
+      auto sprite = _playerSpriteFactory.createSprite(netId);
 
       bool isLocal = (netId == _localNetId);
-      _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
+      _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, _playerSpriteFactory.getSpriteScale(), {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
@@ -133,7 +131,7 @@ namespace rtype::client {
       _networkToEcs[netId] = entity;
     }
 
-    void destroyRemotePlayer(network::NetworkId netId) {
+    void destroyPlayer(network::NetworkId netId) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
         _registry.destroyEntity(it->second);
@@ -144,7 +142,7 @@ namespace rtype::client {
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) {
-        spawnRemotePlayer(state.netId, state.posX, state.posY);
+        spawnPlayer(state.netId, state.posX, state.posY);
         return;
       }
 
@@ -154,7 +152,7 @@ namespace rtype::client {
 
     network::INetworkSocket& _socket;
     engine::Registry& _registry;
-    engine::ITextureManager& _texMgr;
+    IPlayerSpriteFactory& _playerSpriteFactory;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, engine::Entity> _networkToEcs;
 

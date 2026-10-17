@@ -5,6 +5,9 @@
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
 #include "gfx/ITextureManager.hpp"
+#include "gfx/IBackground.hpp"
+#include "gfx/Starfield.hpp"
+#include "game/SFMLPlayerSpriteFactory.hpp"
 #include "input/IInputManager.hpp"
 #include "network/SFMLUdpSocket.hpp"
 #include "network/ClientNetworkManager.hpp"
@@ -13,7 +16,7 @@ namespace rtype::engine {
   class GameScene : public IScene {
   public:
     GameScene(ITextureManager& texMgr, IInputManager& inputMgr, std::string host = "127.0.0.1", unsigned short port = 4242)
-      : _texMgr(texMgr), _inputMgr(inputMgr), _netMgr(_socket, _registry, _texMgr), _host(host), _port(port) {}
+      : _texMgr(texMgr), _inputMgr(inputMgr), _playerSpriteFactory(_texMgr), _netMgr(_socket, _registry, _playerSpriteFactory), _host(host), _port(port) {}
 
     ~GameScene() override = default;
 
@@ -22,6 +25,8 @@ namespace rtype::engine {
     }
 
     void update(float dt) override {
+      _background->update(dt);
+
       bool up = _inputMgr.isKeyPressed(KeyCode::Up);
       bool down = _inputMgr.isKeyPressed(KeyCode::Down);
       bool left = _inputMgr.isKeyPressed(KeyCode::Left);
@@ -40,6 +45,8 @@ namespace rtype::engine {
     }
 
     void render(IWindow& window) override {
+      _background->render(window);
+
       _registry.view<SpriteComponent>([&](Entity, SpriteComponent& spr) {
         if (spr.sprite)
           window.draw(*spr.sprite);
@@ -48,8 +55,10 @@ namespace rtype::engine {
 
   private:
     Registry _registry;
+    std::unique_ptr<IBackground> _background{std::make_unique<Starfield>()};
     ITextureManager& _texMgr;
     IInputManager& _inputMgr;
+    client::SFMLPlayerSpriteFactory _playerSpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
 
