@@ -29,6 +29,16 @@ namespace rtype::engine {
     std::uint8_t type{0};
   };
 
+  struct PlayerComponent {
+    std::uint32_t score{0};
+    std::uint8_t lives{0};
+    bool isInvincible{false};
+  };
+
+  struct LifetimeComponent {
+    float remaining{0.0f};
+  };
+
   struct AnimationComponent {
     int frameWidth{0};
     int frameHeight{0};
@@ -37,6 +47,7 @@ namespace rtype::engine {
     int frameCount{1};
     float frameDuration{0.1f};
     bool pingPong{false};
+    bool loop{true};
     float elapsed{0.0f};
     int step{0};
   };

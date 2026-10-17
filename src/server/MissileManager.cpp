@@ -22,8 +22,16 @@ namespace rtype::server {
     return destroyedIds;
   }
 
+  void MissileManager::remove(network::NetworkId missileId) {
+    _missiles.erase(missileId);
+  }
+
   const std::unordered_map<network::NetworkId, Missile>& MissileManager::getMissiles() const {
     return _missiles;
+  }
+
+  game::Hitbox MissileManager::getHitbox(const Missile& missile) {
+    return game::MISSILE_HITBOX.movedTo(missile.posX, missile.posY);
   }
 
   bool MissileManager::isOutsideWorld(const Missile& missile) const {

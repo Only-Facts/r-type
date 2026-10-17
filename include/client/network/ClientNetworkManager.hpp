@@ -8,6 +8,7 @@
 #include "ecs/Components.hpp"
 #include "exception.hpp"
 #include "game/IEnemySpriteFactory.hpp"
+#include "game/IExplosionSpriteFactory.hpp"
 #include "game/IMissileSpriteFactory.hpp"
 #include "game/IPlayerSpriteFactory.hpp"
 #include <unordered_map>
@@ -20,12 +21,14 @@ namespace rtype::client {
                          engine::Registry& registry,
                          IPlayerSpriteFactory& playerSpriteFactory,
                          IMissileSpriteFactory& missileSpriteFactory,
-                         IEnemySpriteFactory& enemySpriteFactory)
+                         IEnemySpriteFactory& enemySpriteFactory,
+                         IExplosionSpriteFactory& explosionSpriteFactory)
       : _socket(socket),
         _registry(registry),
         _playerSpriteFactory(playerSpriteFactory),
         _missileSpriteFactory(missileSpriteFactory),
-        _enemySpriteFactory(enemySpriteFactory) {}
+        _enemySpriteFactory(enemySpriteFactory),
+        _explosionSpriteFactory(explosionSpriteFactory) {}
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -116,6 +119,12 @@ namespace rtype::client {
           spawnPlayer(netId, x, y);
           break;
         }
+        case network::PacketType::SpawnExplosion: {
+          network::ExplosionData explosion{};
+          reader >> explosion;
+          spawnExplosion(explosion);
+          break;
+        }
         case network::PacketType::SpawnMissile: {
           network::MissileSpawnData missile{};
           reader >> missile;
@@ -154,6 +163,7 @@ namespace rtype::client {
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
+      _registry.addComponent<engine::PlayerComponent>(entity, {0, game::PLAYER_START_LIVES, false});
 
       _networkToEcs[netId] = entity;
     }
@@ -235,21 +245,42 @@ namespace rtype::client {
     }
 
     void updateEntityState(const network::EntityStateData& state) {
-      auto it = _networkToEcs.find(state.netId);
-      if (it == _networkToEcs.end()) {
+      if (_networkToEcs.find(state.netId) == _networkToEcs.end())
         spawnPlayer(state.netId, state.posX, state.posY);
-        return;
-      }
 
-      auto* transform = _registry.getComponent<engine::TransformComponent>(it->second);
+      const engine::Entity entity = _networkToEcs.at(state.netId);
+
+      auto* transform = _registry.getComponent<engine::TransformComponent>(entity);
       if (transform) transform->targetPosition = {state.posX, state.posY};
+
+      auto* player = _registry.getComponent<engine::PlayerComponent>(entity);
+      if (player) *player = {state.score, state.lives, state.isInvincible != 0};
     }
+
+    void spawnExplosion(const network::ExplosionData& explosion) {
+      if (!(explosion.scale > 0.0f && explosion.scale <= MAX_EXPLOSION_SCALE)) return;
+
+      const engine::Vector2f frameSize = _explosionSpriteFactory.getFrameSize();
+      const engine::Vector2f position{
+        explosion.centerX - frameSize.x * explosion.scale / 2.0f,
+        explosion.centerY - frameSize.y * explosion.scale / 2.0f
+      };
+
+      auto entity = _registry.createEntity();
+      _registry.addComponent<engine::TransformComponent>(entity, {position, 0.0f, {explosion.scale, explosion.scale}, position});
+      _registry.addComponent<engine::SpriteComponent>(entity, {_explosionSpriteFactory.createSprite()});
+      _registry.addComponent<engine::AnimationComponent>(entity, _explosionSpriteFactory.createAnimation());
+      _registry.addComponent<engine::LifetimeComponent>(entity, {_explosionSpriteFactory.getDuration()});
+    }
+
+    static constexpr float MAX_EXPLOSION_SCALE = 16.0f;
 
     network::INetworkSocket& _socket;
     engine::Registry& _registry;
     IPlayerSpriteFactory& _playerSpriteFactory;
     IMissileSpriteFactory& _missileSpriteFactory;
     IEnemySpriteFactory& _enemySpriteFactory;
+    IExplosionSpriteFactory& _explosionSpriteFactory;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, engine::Entity> _networkToEcs;
     std::unordered_set<network::NetworkId> _enemyIds;

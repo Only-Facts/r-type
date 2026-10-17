@@ -9,8 +9,11 @@
 #include "gfx/IBackground.hpp"
 #include "gfx/Starfield.hpp"
 #include "game/AnimationSystem.hpp"
+#include "game/LifetimeSystem.hpp"
+#include "game/PlayerStatusSystem.hpp"
 #include "game/ProjectileSystem.hpp"
 #include "game/SFMLEnemySpriteFactory.hpp"
+#include "game/SFMLExplosionSpriteFactory.hpp"
 #include "game/SFMLMissileSpriteFactory.hpp"
 #include "game/SFMLPlayerSpriteFactory.hpp"
 #include "input/IInputManager.hpp"
@@ -28,11 +31,14 @@ namespace rtype::engine {
         _playerSpriteFactory(_texMgr),
         _missileSpriteFactory(_texMgr),
         _enemySpriteFactory(_texMgr),
-        _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory, _enemySpriteFactory),
+        _explosionSpriteFactory(_texMgr),
+        _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory, _enemySpriteFactory, _explosionSpriteFactory),
         _host(host),
         _port(port) {
       _systems.push_back(std::make_unique<client::ProjectileSystem>());
       _systems.push_back(std::make_unique<client::AnimationSystem>());
+      _systems.push_back(std::make_unique<client::LifetimeSystem>());
+      _systems.push_back(std::make_unique<client::PlayerStatusSystem>());
     }
 
     ~GameScene() override = default;
@@ -83,6 +89,7 @@ namespace rtype::engine {
     client::SFMLPlayerSpriteFactory _playerSpriteFactory;
     client::SFMLMissileSpriteFactory _missileSpriteFactory;
     client::SFMLEnemySpriteFactory _enemySpriteFactory;
+    client::SFMLExplosionSpriteFactory _explosionSpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
 

@@ -3,6 +3,7 @@
 
 #include "GameConstants.hpp"
 #include "network/Protocol.hpp"
+#include <cstdint>
 #include <random>
 #include <unordered_map>
 
@@ -14,6 +15,7 @@ namespace rtype::server {
     float posY;
     float baseY;
     float age;
+    int health;
   };
 
   class EnemyManager {
@@ -22,7 +24,14 @@ namespace rtype::server {
 
     void update(float deltaTime);
 
+    bool applyDamage(network::NetworkId enemyId, int damage);
+    void remove(network::NetworkId enemyId);
+
     const std::unordered_map<network::NetworkId, Enemy>& getEnemies() const;
+
+    static game::Hitbox getHitbox(const Enemy& enemy);
+    static std::uint32_t getScoreValue(game::EnemyType type);
+    static float getExplosionScale(game::EnemyType type);
 
   private:
     void spawnRandomEnemy();

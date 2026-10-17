@@ -6,17 +6,19 @@
 namespace rtype::server {
   namespace {
     struct EnemyStats {
-      float width;
-      float height;
+      game::Hitbox hitbox;
       float speed;
       float waveAmplitude;
       float waveFrequency;
+      int maxHealth;
+      std::uint32_t scoreValue;
+      float explosionScale;
     };
 
     constexpr std::array<EnemyStats, static_cast<std::size_t>(game::EnemyType::Count)> ENEMY_STATS{{
-      {48.0f, 45.0f, 320.0f, 90.0f, 3.0f},
-      {90.0f, 78.0f, 200.0f, 0.0f, 0.0f},
-      {96.0f, 93.0f, 120.0f, 40.0f, 1.2f},
+      {{3.0f, 3.0f, 42.0f, 39.0f}, 320.0f, 90.0f, 3.0f, 1, 100, 3.0f},
+      {{6.0f, 6.0f, 78.0f, 66.0f}, 200.0f, 0.0f, 0.0f, 2, 200, 5.0f},
+      {{6.0f, 6.0f, 84.0f, 81.0f}, 120.0f, 40.0f, 1.2f, 4, 400, 6.0f},
     }};
 
     constexpr float SCREEN_EDGE_MARGIN = 20.0f;
@@ -47,8 +49,35 @@ namespace rtype::server {
       _enemies.erase(id);
   }
 
+  bool EnemyManager::applyDamage(network::NetworkId enemyId, int damage) {
+    auto it = _enemies.find(enemyId);
+    if (it == _enemies.end()) return false;
+
+    it->second.health -= damage;
+    if (it->second.health > 0) return false;
+
+    _enemies.erase(it);
+    return true;
+  }
+
+  void EnemyManager::remove(network::NetworkId enemyId) {
+    _enemies.erase(enemyId);
+  }
+
   const std::unordered_map<network::NetworkId, Enemy>& EnemyManager::getEnemies() const {
     return _enemies;
+  }
+
+  game::Hitbox EnemyManager::getHitbox(const Enemy& enemy) {
+    return getStats(enemy.type).hitbox.movedTo(enemy.posX, enemy.posY);
+  }
+
+  std::uint32_t EnemyManager::getScoreValue(game::EnemyType type) {
+    return getStats(type).scoreValue;
+  }
+
+  float EnemyManager::getExplosionScale(game::EnemyType type) {
+    return getStats(type).explosionScale;
   }
 
   void EnemyManager::spawnRandomEnemy() {
@@ -56,12 +85,13 @@ namespace rtype::server {
     const auto type = static_cast<game::EnemyType>(typeDistribution(_rng));
     const EnemyStats& stats = getStats(type);
 
+    const float spriteHeight = stats.hitbox.height + 2.0f * stats.hitbox.y;
     const float minY = SCREEN_EDGE_MARGIN + stats.waveAmplitude;
-    const float maxY = game::WORLD_HEIGHT - SCREEN_EDGE_MARGIN - stats.waveAmplitude - stats.height;
+    const float maxY = game::WORLD_HEIGHT - SCREEN_EDGE_MARGIN - stats.waveAmplitude - spriteHeight;
     std::uniform_real_distribution<float> yDistribution(minY, maxY);
     const float spawnY = yDistribution(_rng);
 
-    const Enemy enemy{_nextEnemyId++, type, game::WORLD_WIDTH, spawnY, spawnY, 0.0f};
+    const Enemy enemy{_nextEnemyId++, type, game::WORLD_WIDTH, spawnY, spawnY, 0.0f, stats.maxHealth};
     _enemies[enemy.id] = enemy;
   }
 
@@ -79,6 +109,7 @@ namespace rtype::server {
   }
 
   bool EnemyManager::isOutsideWorld(const Enemy& enemy) const {
-    return enemy.posX < -(game::WORLD_DESPAWN_MARGIN + getStats(enemy.type).width);
+    const game::Hitbox& hitbox = getStats(enemy.type).hitbox;
+    return enemy.posX < -(game::WORLD_DESPAWN_MARGIN + hitbox.x + hitbox.width);
   }
 }

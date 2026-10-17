@@ -9,7 +9,9 @@ namespace rtype::client {
       animation.elapsed += deltaTime;
       while (animation.elapsed >= animation.frameDuration) {
         animation.elapsed -= animation.frameDuration;
-        animation.step = (animation.step + 1) % getCycleLength(animation);
+        const int cycleLength = getCycleLength(animation);
+        if (!animation.loop && animation.step + 1 >= cycleLength) break;
+        animation.step = (animation.step + 1) % cycleLength;
       }
 
       const int column = animation.firstColumn + getCurrentFrame(animation);

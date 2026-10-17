@@ -1,6 +1,7 @@
 #ifndef GAMECONSTANTS_HPP
 #define GAMECONSTANTS_HPP
 
+#include "Hitbox.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -17,7 +18,17 @@ namespace rtype::game {
   inline constexpr float PLAYER_MUZZLE_OFFSET_X = 99.0f;
   inline constexpr float PLAYER_MUZZLE_OFFSET_Y = 8.0f;
 
+  inline constexpr float PLAYER_WIDTH = 99.0f;
+  inline constexpr float PLAYER_HEIGHT = 51.0f;
+  inline constexpr Hitbox PLAYER_HITBOX{6.0f, 12.0f, 87.0f, 36.0f};
+
+  inline constexpr std::uint8_t PLAYER_START_LIVES = 3;
+  inline constexpr float PLAYER_INVINCIBILITY_DURATION = 2.0f;
+  inline constexpr float PLAYER_EXPLOSION_SCALE = 5.0f;
+
   inline constexpr float MISSILE_SPEED = 900.0f;
+  inline constexpr int MISSILE_DAMAGE = 1;
+  inline constexpr Hitbox MISSILE_HITBOX{0.0f, 6.0f, 48.0f, 24.0f};
 
   enum class EnemyType : std::uint8_t {
     Spinner = 0,

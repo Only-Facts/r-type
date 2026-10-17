@@ -22,7 +22,11 @@ namespace rtype::server {
 
     std::vector<network::NetworkId> update(float deltaTime);
 
+    void remove(network::NetworkId missileId);
+
     const std::unordered_map<network::NetworkId, Missile>& getMissiles() const;
+
+    static game::Hitbox getHitbox(const Missile& missile);
 
   private:
     bool isOutsideWorld(const Missile& missile) const;

@@ -8,7 +8,9 @@
 #include "GameConstants.hpp"
 #include "EnemyManager.hpp"
 #include "MissileManager.hpp"
+#include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 namespace rtype::server {
   struct ConnectedClient {
@@ -19,6 +21,12 @@ namespace rtype::server {
     float velX{0.0f};
     float velY{0.0f};
     float shootCooldown{0.0f};
+    std::uint32_t score{0};
+    std::uint8_t lives{game::PLAYER_START_LIVES};
+    float invincibilityTimer{0.0f};
+
+    bool isAlive() const { return lives > 0; }
+    bool isInvincible() const { return invincibilityTimer > 0.0f; }
   };
 
   class ServerNetworkManager {
@@ -30,6 +38,8 @@ namespace rtype::server {
       updatePhysics(dt);
       updateMissiles(dt);
       if (!_clients.empty()) _enemyManager.update(dt);
+      resolveMissileHits();
+      resolveEnemyContacts();
       broadcastGameState();
     }
 
@@ -139,7 +149,7 @@ namespace rtype::server {
       reader >> netId >> up >> down >> left >> right >> shoot;
 
       auto it = _clients.find(netId);
-      if (it == _clients.end()) return;
+      if (it == _clients.end() || !it->second.isAlive()) return;
 
       const float speed = game::PLAYER_SPEED;
       it->second.velX = 0.0f;
@@ -165,18 +175,87 @@ namespace rtype::server {
 
     void updatePhysics(float dt) {
       for (auto& [id, client] : _clients) {
-        client.posX += client.velX * dt;
-        client.posY += client.velY * dt;
+        client.posX = std::clamp(client.posX + client.velX * dt, 0.0f, game::WORLD_WIDTH - game::PLAYER_WIDTH);
+        client.posY = std::clamp(client.posY + client.velY * dt, 0.0f, game::WORLD_HEIGHT - game::PLAYER_HEIGHT);
         if (client.shootCooldown > 0.0f) client.shootCooldown -= dt;
+        if (client.invincibilityTimer > 0.0f) client.invincibilityTimer -= dt;
       }
     }
 
-    void updateMissiles(float dt) {
-      for (network::NetworkId id : _missileManager.update(dt)) {
-        network::PacketStreamWriter payload;
-        payload << id;
-        broadcast(buildPacket(network::PacketType::DestroyEntity, payload));
+    void resolveMissileHits() {
+      std::vector<network::NetworkId> spentMissileIds;
+
+      for (const auto& [missileId, missile] : _missileManager.getMissiles()) {
+        const game::Hitbox missileHitbox = MissileManager::getHitbox(missile);
+
+        for (const auto& [enemyId, enemy] : _enemyManager.getEnemies()) {
+          if (!missileHitbox.intersects(EnemyManager::getHitbox(enemy))) continue;
+
+          spentMissileIds.push_back(missileId);
+          const Enemy target = enemy;
+          if (_enemyManager.applyDamage(enemyId, game::MISSILE_DAMAGE)) onEnemyKilled(target, missile.ownerId);
+          break;
+        }
       }
+
+      for (network::NetworkId missileId : spentMissileIds) {
+        _missileManager.remove(missileId);
+        broadcastDestroyEntity(missileId);
+      }
+    }
+
+    void onEnemyKilled(const Enemy& enemy, network::NetworkId killerId) {
+      auto killer = _clients.find(killerId);
+      if (killer != _clients.end()) killer->second.score += EnemyManager::getScoreValue(enemy.type);
+
+      broadcastExplosion(EnemyManager::getHitbox(enemy), EnemyManager::getExplosionScale(enemy.type));
+    }
+
+    void resolveEnemyContacts() {
+      for (auto& [clientId, client] : _clients) {
+        if (!client.isAlive() || client.isInvincible()) continue;
+        const game::Hitbox playerHitbox = game::PLAYER_HITBOX.movedTo(client.posX, client.posY);
+
+        for (const auto& [enemyId, enemy] : _enemyManager.getEnemies()) {
+          const game::Hitbox enemyHitbox = EnemyManager::getHitbox(enemy);
+          if (!playerHitbox.intersects(enemyHitbox)) continue;
+
+          broadcastExplosion(enemyHitbox, EnemyManager::getExplosionScale(enemy.type));
+          _enemyManager.remove(enemyId);
+          damagePlayer(client);
+          break;
+        }
+      }
+    }
+
+    void damagePlayer(ConnectedClient& client) {
+      --client.lives;
+      client.invincibilityTimer = game::PLAYER_INVINCIBILITY_DURATION;
+
+      if (client.isAlive()) return;
+
+      client.velX = 0.0f;
+      client.velY = 0.0f;
+      broadcastExplosion(game::PLAYER_HITBOX.movedTo(client.posX, client.posY), game::PLAYER_EXPLOSION_SCALE);
+    }
+
+    void broadcastExplosion(const game::Hitbox& area, float scale) {
+      network::ExplosionData data{area.x + area.width / 2.0f, area.y + area.height / 2.0f, scale};
+
+      network::PacketStreamWriter payload;
+      payload << data;
+      broadcast(buildPacket(network::PacketType::SpawnExplosion, payload));
+    }
+
+    void broadcastDestroyEntity(network::NetworkId netId) {
+      network::PacketStreamWriter payload;
+      payload << netId;
+      broadcast(buildPacket(network::PacketType::DestroyEntity, payload));
+    }
+
+    void updateMissiles(float dt) {
+      for (network::NetworkId id : _missileManager.update(dt))
+        broadcastDestroyEntity(id);
     }
 
     void broadcastGameState() {
@@ -190,7 +269,10 @@ namespace rtype::server {
       writer << count;
 
       for (const auto& [id, client] : _clients) {
-        network::EntityStateData state{client.id, client.posX, client.posY, client.velX, client.velY};
+        network::EntityStateData state{
+          client.id, client.posX, client.posY, client.velX, client.velY,
+          client.score, client.lives, static_cast<std::uint8_t>(client.isInvincible())
+        };
         writer << state;
       }
 
