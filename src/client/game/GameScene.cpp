@@ -19,7 +19,6 @@
 
 namespace rtype::game {
   namespace {
-    // Action names are the game's vocabulary; the keys behind them live in [input].
     constexpr const char* ACTION_UP = "move_up";
     constexpr const char* ACTION_DOWN = "move_down";
     constexpr const char* ACTION_LEFT = "move_left";
@@ -62,7 +61,6 @@ namespace rtype::game {
   }
 
   void GameScene::validateCatalog() const {
-    // Fail at startup rather than when the first enemy shows up.
     for (int id = 0; id < 256; ++id) {
       const EntityProfile* profile = _catalog.find(static_cast<network::ext::EntityType>(id));
       if (!profile) continue;
@@ -82,7 +80,6 @@ namespace rtype::game {
   }
 
   void GameScene::onInit() {
-    // Engine systems, in execution order.
     addSystem<engine::AnimationSystem>();
     addSystem<engine::MovementSystem>();
     addSystem<engine::ParallaxSystem>(_context.window);
@@ -115,7 +112,6 @@ namespace rtype::game {
   void GameScene::onUpdate(float dt) {
     const engine::ActionMap& actions = _context.actions;
     if (_localDead) {
-      // Keep the connection alive (the server times out silent clients) without moving.
       _network.sendInputs(false, false, false, false, false);
     } else _network.sendInputs(actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
                         actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT),
@@ -130,7 +126,6 @@ namespace rtype::game {
     const bool connected = _network.isConnected();
     if (connected && !_wasConnected) {
       const network::NetworkId me = _network.getLocalNetId();
-      // Status shown in the local player's color AND with its number (color is not the only cue).
       const engine::Color color = _context.resources.get(playerAssetFor(me)).tint;
       _hud.setStatus("connected_text", {{"player", std::to_string(playerNumber(me))}}, color);
     } else if (!connected) {
@@ -152,7 +147,6 @@ namespace rtype::game {
 
     const EntityProfile* profile = _catalog.find(type);
     if (!profile) {
-      // Unknown type: keep the entity (the server owns it) but do not draw it.
       if (std::find(_warnedTypes.begin(), _warnedTypes.end(), type) == _warnedTypes.end()) {
         _warnedTypes.push_back(type);
         std::cerr << "[warning] entity type " << static_cast<int>(type) << " has no [entity_types] entry\n";
@@ -244,19 +238,17 @@ namespace rtype::game {
 
   void GameScene::onPlayerDestroyed(network::NetworkId netId) {
     _players.erase(netId);
-    if (_deadPlayers.erase(netId) > 0) return;  // already announced as destroyed
+    if (_deadPlayers.erase(netId) > 0) return; 
     playSound("leave_sound");
     _hud.notify("left_text", {{"player", std::to_string(playerNumber(netId))}});
   }
 
   int GameScene::playerNumber(network::NetworkId netId) const {
-    // The first id the server hands out shows as "Player 1".
     const network::NetworkId index = netId >= _firstPlayerId ? netId - _firstPlayerId : 0;
     return static_cast<int>(index % static_cast<network::NetworkId>(_playerVariants)) + 1;
   }
 
   std::string GameScene::playerAssetFor(network::NetworkId netId) const {
-    // Each player gets a distinct variant (subject: the 4 players must be identifiable).
     return _playerAssetPrefix + std::to_string(playerNumber(netId));
   }
 

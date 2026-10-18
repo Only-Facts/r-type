@@ -6,7 +6,6 @@
 
 namespace rtype::game {
   namespace {
-    // Template keys looked up in the [hud] section, with an English fallback.
     const std::unordered_map<std::string, std::string> DEFAULT_TEMPLATES{
       {"connecting_text", "Connecting to {host}:{port}..."},
       {"connected_text", "Connected - Player {player}"},
@@ -68,7 +67,6 @@ namespace rtype::game {
     _status = createText({0.0f, 0.0f}, {m, m}, {0.0f, 0.0f}, scaled(_settings.textSize));
     _players = createText({1.0f, 0.0f}, {-m, m}, {1.0f, 0.0f}, scaled(_settings.textSize));
 
-    // Health bar under the status line, with "HP x/y" next to it (number + color).
     const float lineHeight = static_cast<float>(scaled(_settings.textSize)) * _settings.lineSpacing;
     const float barY = m + lineHeight * _settings.barTop;
     _barBack = createBar(barY, _settings.barBackColor, 90);
@@ -91,7 +89,7 @@ namespace rtype::game {
 
     if (auto* sprite = _registry.getComponent<engine::SpriteComponent>(entity)) {
       sprite->tint = color;
-      sprite->visible = false;  // shown once the first health value is known
+      sprite->visible = false;  
     }
     if (auto* transform = _registry.getComponent<engine::TransformComponent>(entity))
       transform->scale = {_settings.barSize.x * _settings.scale, _settings.barSize.y * _settings.scale};
@@ -136,7 +134,6 @@ namespace rtype::game {
   }
 
   void Hud::notify(const std::string& templateKey, const Params& params) {
-    // Forget notifications already destroyed by the LifetimeSystem.
     _notifications.erase(std::remove_if(_notifications.begin(), _notifications.end(), [this](engine::Entity e) {
       return _registry.getComponent<engine::TextComponent>(e) == nullptr;
     }), _notifications.end());
@@ -145,7 +142,6 @@ namespace rtype::game {
     const float lineHeight = static_cast<float>(size) * _settings.lineSpacing;
     const float top = _settings.margin + lineHeight * _settings.notificationTop;
 
-    // Newest on top, older ones pushed down.
     for (std::size_t i = 0; i < _notifications.size(); ++i)
       if (auto* anchor = _registry.getComponent<engine::ScreenAnchorComponent>(_notifications[i]))
         anchor->offset.y = top + lineHeight * static_cast<float>(_notifications.size() - i);
