@@ -107,22 +107,39 @@ namespace rtype::server {
 
       switch (header.type) {
         case network::PacketType::ConnectReq: handleConnect(sender); break;
+        case network::PacketType::Disconnect: handleDisconnect(reader, sender); break;
         case network::PacketType::PlayerInput: handleInput(reader); break;
         default: break;
       }
     }
 
+    static bool isSameEndpoint(const network::Endpoint& a, const network::Endpoint& b) {
+      return a.address == b.address && a.port == b.port;
+    }
+
+    ConnectedClient* findClientByEndpoint(const network::Endpoint& endpoint) {
+      for (auto& [id, client] : _clients)
+        if (isSameEndpoint(client.endpoint, endpoint)) return &client;
+      return nullptr;
+    }
+
+    void sendConnectAck(network::NetworkId netId, const network::Endpoint& endpoint) {
+      network::PacketStreamWriter payload;
+      payload << netId;
+      _socket.send(buildPacket(network::PacketType::ConnectAck, payload), endpoint);
+    }
+
     void handleConnect(const network::Endpoint& sender) {
+      if (const ConnectedClient* existing = findClientByEndpoint(sender)) {
+        sendConnectAck(existing->id, sender);
+        return;
+      }
+
       network::NetworkId netId = _nextNetId++;
       ConnectedClient client{netId, sender, SPAWN_X, getSpawnY(netId), 0.0f, 0.0f, 0.0f};
       _clients[netId] = client;
 
-      {
-        network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectAck, _outgoingSeq++, sizeof(netId)};
-        network::PacketStreamWriter writer;
-        writer << header << netId;
-        _socket.send(writer.getBuffer(), sender);
-      }
+      sendConnectAck(netId, sender);
 
       for (const auto& [id, existingClient] : _clients) {
         network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::SpawnPlayer, _outgoingSeq++, 0};
@@ -141,6 +158,17 @@ namespace rtype::server {
 
       for (const auto& [id, missile] : _missileManager.getMissiles())
         _socket.send(buildSpawnMissilePacket(missile), sender);
+    }
+
+    void handleDisconnect(network::PacketStreamReader& reader, const network::Endpoint& sender) {
+      network::NetworkId netId;
+      reader >> netId;
+
+      auto it = _clients.find(netId);
+      if (it == _clients.end() || !isSameEndpoint(it->second.endpoint, sender)) return;
+
+      _clients.erase(it);
+      broadcastDestroyEntity(netId);
     }
 
     void handleInput(network::PacketStreamReader& reader) {

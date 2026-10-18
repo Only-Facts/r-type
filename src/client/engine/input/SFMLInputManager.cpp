@@ -15,6 +15,7 @@ namespace rtype::engine {
     _keyMap[sf::Keyboard::Key::Space] = KeyCode::Space;
     _keyMap[sf::Keyboard::Key::Escape] = KeyCode::Escape;
     _keyMap[sf::Keyboard::Key::Enter] = KeyCode::Enter;
+    _keyMap[sf::Keyboard::Key::Tab] = KeyCode::Tab;
 
     _keyMap[sf::Keyboard::Key::Z] = KeyCode::KeyZ;
     _keyMap[sf::Keyboard::Key::Q] = KeyCode::KeyQ;
@@ -24,6 +25,7 @@ namespace rtype::engine {
 
   void SFMLInputManager::update() {
     _previousStates = _currentStates;
+    _textEntered.clear();
   }
 
   void SFMLInputManager::handleEvent(const sf::Event& event) {
@@ -31,8 +33,20 @@ namespace rtype::engine {
       setKeyState(pressed->code, true);
     else if (const auto* released = event.getIf<sf::Event::KeyReleased>())
       setKeyState(released->code, false);
+    else if (const auto* text = event.getIf<sf::Event::TextEntered>())
+      appendTextEntered(text->unicode);
     else if (event.is<sf::Event::FocusLost>())
       _currentStates.fill(false);
+  }
+
+  void SFMLInputManager::appendTextEntered(char32_t character) {
+    const bool isPrintableAscii = character >= U' ' && character <= U'~';
+    if (isPrintableAscii || character == BACKSPACE_CHARACTER)
+      _textEntered.push_back(static_cast<char>(character));
+  }
+
+  const std::string& SFMLInputManager::getTextEntered() const {
+    return _textEntered;
   }
 
   void SFMLInputManager::setKeyState(sf::Keyboard::Key key, bool isPressed) {

@@ -5,13 +5,14 @@
 #include "ecs/ISystem.hpp"
 #include "ecs/Registry.hpp"
 #include "ecs/Components.hpp"
+#include "gfx/ITextFactory.hpp"
 #include "gfx/ITextureManager.hpp"
 #include "gfx/IBackground.hpp"
-#include "gfx/SFMLTextFactory.hpp"
 #include "gfx/Starfield.hpp"
 #include "game/AnimationSystem.hpp"
 #include "game/Hud.hpp"
 #include "game/LifetimeSystem.hpp"
+#include "game/MessageOverlay.hpp"
 #include "game/PlayerStatusSystem.hpp"
 #include "game/ProjectileSystem.hpp"
 #include "game/SFMLEnemySpriteFactory.hpp"
@@ -22,13 +23,20 @@
 #include "input/IInputManager.hpp"
 #include "network/SFMLUdpSocket.hpp"
 #include "network/ClientNetworkManager.hpp"
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace rtype::engine {
   class GameScene : public IScene {
   public:
-    GameScene(ITextureManager& texMgr, IInputManager& inputMgr, std::string host = "127.0.0.1", unsigned short port = 4242)
+    GameScene(ITextureManager& texMgr,
+              IInputManager& inputMgr,
+              ITextFactory& textFactory,
+              std::string host,
+              unsigned short port,
+              std::function<void()> onExit)
       : _texMgr(texMgr),
         _inputMgr(inputMgr),
         _playerSpriteFactory(_texMgr),
@@ -36,10 +44,11 @@ namespace rtype::engine {
         _enemySpriteFactory(_texMgr),
         _explosionSpriteFactory(_texMgr),
         _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory, _enemySpriteFactory, _explosionSpriteFactory),
-        _textFactory(HUD_FONT_PATH),
-        _hud(_textFactory, _playerSpriteFactory),
-        _host(host),
-        _port(port) {
+        _hud(textFactory, _playerSpriteFactory),
+        _overlay(textFactory),
+        _host(std::move(host)),
+        _port(port),
+        _onExit(std::move(onExit)) {
       _systems.push_back(std::make_unique<client::ProjectileSystem>());
       _systems.push_back(std::make_unique<client::AnimationSystem>());
       _systems.push_back(std::make_unique<client::LifetimeSystem>());
@@ -47,22 +56,31 @@ namespace rtype::engine {
       _systems.push_back(std::make_unique<client::ShipTiltSystem>());
     }
 
-    ~GameScene() override = default;
+    ~GameScene() override {
+      _netMgr.disconnect();
+    }
 
     void init() override {
       _netMgr.connectToServer(_host, _port);
+      setState(State::Connecting);
     }
 
     void update(float dt) override {
       _background->update(dt);
+      _stateTimer += dt;
 
-      bool up = _inputMgr.isKeyPressed(KeyCode::Up);
-      bool down = _inputMgr.isKeyPressed(KeyCode::Down);
-      bool left = _inputMgr.isKeyPressed(KeyCode::Left);
-      bool right = _inputMgr.isKeyPressed(KeyCode::Right);
-      bool shoot = _inputMgr.isKeyPressed(KeyCode::Space);
+      if (_inputMgr.isKeyJustPressed(KeyCode::Escape)) {
+        leave();
+        return;
+      }
 
-      _netMgr.sendInputs(up, down, left, right, shoot);
+      const bool canPlay = _state == State::Playing;
+      _netMgr.sendInputs(
+        canPlay && _inputMgr.isKeyPressed(KeyCode::Up),
+        canPlay && _inputMgr.isKeyPressed(KeyCode::Down),
+        canPlay && _inputMgr.isKeyPressed(KeyCode::Left),
+        canPlay && _inputMgr.isKeyPressed(KeyCode::Right),
+        canPlay && _inputMgr.isKeyPressed(KeyCode::Space));
       _netMgr.update(dt);
 
       for (auto& system : _systems)
@@ -77,6 +95,7 @@ namespace rtype::engine {
       });
 
       _hud.update(_registry);
+      updateState();
     }
 
     void render(IWindow& window) override {
@@ -88,10 +107,75 @@ namespace rtype::engine {
       });
 
       _hud.render(window);
+      if (_state != State::Playing) _overlay.render(window);
     }
 
   private:
-    static constexpr const char* HUD_FONT_PATH = "assets/fonts/tuffy.ttf";
+    enum class State { Connecting, Playing, GameOver, ConnectionFailed };
+
+    static constexpr float CONNECT_TIMEOUT = 5.0f;
+    static constexpr float GAME_OVER_DELAY = 1.2f;
+
+    void updateState() {
+      switch (_state) {
+        case State::Connecting:
+          if (_netMgr.isConnected()) setState(State::Playing);
+          else if (_stateTimer >= CONNECT_TIMEOUT) {
+            _netMgr.disconnect();
+            setState(State::ConnectionFailed);
+          }
+          break;
+        case State::Playing: {
+          const PlayerComponent* localPlayer = findLocalPlayer();
+          if (!localPlayer || localPlayer->lives > 0) _stateTimer = 0.0f;
+          else if (_stateTimer >= GAME_OVER_DELAY) {
+            _finalScore = localPlayer->score;
+            setState(State::GameOver);
+          }
+          break;
+        }
+        case State::GameOver:
+        case State::ConnectionFailed:
+          if (_inputMgr.isKeyJustPressed(KeyCode::Enter)) leave();
+          break;
+      }
+    }
+
+    void setState(State state) {
+      _state = state;
+      _stateTimer = 0.0f;
+
+      const std::string address = _host + ":" + std::to_string(_port);
+      switch (state) {
+        case State::Connecting:
+          _overlay.setMessage("CONNECTING", address, "ESC  back to menu");
+          break;
+        case State::ConnectionFailed:
+          _overlay.setMessage("CONNECTION FAILED", "No answer from " + address, "ENTER  back to menu");
+          break;
+        case State::GameOver:
+          _overlay.setMessage("GAME OVER", "SCORE  " + client::Hud::formatScore(_finalScore), "ENTER  back to menu");
+          break;
+        case State::Playing:
+          break;
+      }
+    }
+
+    const PlayerComponent* findLocalPlayer() {
+      const PlayerComponent* localPlayer = nullptr;
+      _registry.view<PlayerComponent>([&](Entity entity, PlayerComponent& player) {
+        auto* networkId = _registry.getComponent<NetworkIdComponent>(entity);
+        if (networkId && networkId->isLocalPlayer) localPlayer = &player;
+      });
+      return localPlayer;
+    }
+
+    void leave() {
+      if (_hasLeft) return;
+      _hasLeft = true;
+      _netMgr.disconnect();
+      if (_onExit) _onExit();
+    }
 
     Registry _registry;
     std::unique_ptr<IBackground> _background{std::make_unique<Starfield>()};
@@ -104,11 +188,17 @@ namespace rtype::engine {
     client::SFMLExplosionSpriteFactory _explosionSpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
-    SFMLTextFactory _textFactory;
     client::Hud _hud;
+    client::MessageOverlay _overlay;
 
-    std::string _host{"127.0.0.1"};
-    unsigned short _port{4242};
+    std::string _host;
+    unsigned short _port;
+    std::function<void()> _onExit;
+
+    State _state{State::Connecting};
+    float _stateTimer{0.0f};
+    std::uint32_t _finalScore{0};
+    bool _hasLeft{false};
   };
 }
 

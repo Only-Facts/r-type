@@ -34,18 +34,28 @@ namespace rtype::client {
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
+      _isConnected = false;
+      sendConnectRequest();
+    }
 
-      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++, 0};
-      network::PacketStreamWriter writer;
-      writer << header;
-      _socket.send(writer.getBuffer(), _serverEndpoint);
+    void disconnect() {
+      if (_hasDisconnected) return;
+      _hasDisconnected = true;
+      if (!_isConnected) return;
+
+      network::PacketStreamWriter payload;
+      payload << _localNetId;
+      sendPacket(network::PacketType::Disconnect, payload);
       _isConnected = false;
     }
 
     void update(float dt) {
       processIncomingPackets();
       forgetDestroyedEntities();
-      if (!_isConnected) return;
+      if (!_isConnected) {
+        if (!_hasDisconnected) retryConnectRequest(dt);
+        return;
+      }
 
       _registry.view<engine::TransformComponent>([this, dt](engine::Entity entity, engine::TransformComponent& transform) {
         if (_registry.getComponent<engine::ProjectileComponent>(entity)) return;
@@ -60,28 +70,41 @@ namespace rtype::client {
     void sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
       if (!_isConnected) return;
 
-      network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, _outgoingSeq++, 0
-      };
-
       network::PacketStreamWriter payload;
       payload << _localNetId << up << down << left << right << shoot;
-
-      header.payloadSize = static_cast<std::uint16_t>(payload.getBuffer().size());
-
-      network::PacketStreamWriter finalPacket;
-      finalPacket << header;
-
-      network::PacketData packet = finalPacket.getBuffer();
-      packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
-
-      _socket.send(packet, _serverEndpoint);
+      sendPacket(network::PacketType::PlayerInput, payload);
     }
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
 
   private:
+    static constexpr float CONNECT_RETRY_DELAY = 0.5f;
+
+    void sendPacket(network::PacketType type, const network::PacketStreamWriter& payload) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, type, _outgoingSeq++,
+        static_cast<std::uint16_t>(payload.getBuffer().size())
+      };
+
+      network::PacketStreamWriter writer;
+      writer << header;
+
+      network::PacketData packet = writer.getBuffer();
+      packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
+      _socket.send(packet, _serverEndpoint);
+    }
+
+    void sendConnectRequest() {
+      sendPacket(network::PacketType::ConnectReq, network::PacketStreamWriter{});
+      _connectRetryTimer = CONNECT_RETRY_DELAY;
+    }
+
+    void retryConnectRequest(float dt) {
+      _connectRetryTimer -= dt;
+      if (_connectRetryTimer <= 0.0f) sendConnectRequest();
+    }
+
     void processIncomingPackets() {
       network::PacketData data;
       network::Endpoint sender;
@@ -108,6 +131,7 @@ namespace rtype::client {
 
       switch (header.type) {
         case network::PacketType::ConnectAck: {
+          if (_hasDisconnected) break;
           reader >> _localNetId;
           _isConnected = true;
           break;
@@ -293,6 +317,8 @@ namespace rtype::client {
     std::uint32_t _outgoingSeq{1};
     std::uint32_t _lastIncomingSeq{0};
     bool _isConnected{false};
+    float _connectRetryTimer{0.0f};
+    bool _hasDisconnected{false};
   };
 }
 

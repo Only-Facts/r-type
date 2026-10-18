@@ -19,6 +19,8 @@ namespace rtype::client {
     void update(engine::Registry& registry);
     void render(engine::IWindow& window) const;
 
+    static std::string formatScore(std::uint32_t score);
+
   private:
     struct PlayerLine {
       std::shared_ptr<engine::IText> label;
@@ -30,7 +32,6 @@ namespace rtype::client {
     PlayerLine& getOrCreateLine(network::NetworkId playerId);
     void layoutLines();
 
-    static std::string formatScore(std::uint32_t score);
     static engine::Color withAlpha(engine::Color color, std::uint8_t alpha);
 
     engine::ITextFactory& _textFactory;
