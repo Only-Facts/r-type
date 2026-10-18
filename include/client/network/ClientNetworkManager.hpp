@@ -18,12 +18,25 @@ namespace rtype::client {
                          engine::ITextureManager& texMgr)
       : _socket(socket), _registry(registry), _texMgr(texMgr) {}
 
+    ~ClientNetworkManager() {
+      disconnect();
+    }
+
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
 
       network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++, 0};
+      network::PacketStreamWriter writer;
+      writer << header;
+      _socket.send(writer.getBuffer(), _serverEndpoint);
+      _isConnected = false;
+    }
+
+    void disconnect() {
+      if (!_isConnected) return;
+      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++, 0};
       network::PacketStreamWriter writer;
       writer << header;
       _socket.send(writer.getBuffer(), _serverEndpoint);
