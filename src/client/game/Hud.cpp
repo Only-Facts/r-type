@@ -37,16 +37,6 @@ namespace rtype::game {
     return s;
   }
 
-  std::string Hud::format(const std::string& templ, const Params& params) {
-    std::string result = templ;
-    for (const auto& [key, value] : params) {
-      const std::string token = "{" + key + "}";
-      for (auto pos = result.find(token); pos != std::string::npos; pos = result.find(token, pos + value.size()))
-        result.replace(pos, token.size(), value);
-    }
-    return result;
-  }
-
   Hud::Hud(engine::Registry& registry, Settings settings)
     : _registry(registry), _settings(std::move(settings)) {}
 
@@ -58,14 +48,14 @@ namespace rtype::game {
 
   void Hud::setStatus(const std::string& templateKey, const Params& params, const engine::Color& color) {
     if (auto* text = _registry.getComponent<engine::TextComponent>(_status)) {
-      text->text = format(getTemplate(templateKey), params);
+      text->text = engine::formatTemplate(getTemplate(templateKey), params);
       text->color = color;
     }
   }
 
   void Hud::setPlayerCount(std::size_t count, std::size_t max) {
     if (auto* text = _registry.getComponent<engine::TextComponent>(_players))
-      text->text = format(getTemplate("players_text"), {{"count", std::to_string(count)}, {"max", std::to_string(max)}});
+      text->text = engine::formatTemplate(getTemplate("players_text"), {{"count", std::to_string(count)}, {"max", std::to_string(max)}});
   }
 
   void Hud::notify(const std::string& templateKey, const Params& params) {
@@ -85,7 +75,7 @@ namespace rtype::game {
 
     const engine::Entity entity = createText({0.5f, 0.0f}, {0.0f, top}, {0.5f, 0.0f}, size);
     if (auto* text = _registry.getComponent<engine::TextComponent>(entity))
-      text->text = format(getTemplate(templateKey), params);
+      text->text = engine::formatTemplate(getTemplate(templateKey), params);
 
     engine::LifetimeComponent lifetime;
     lifetime.remaining = _settings.notificationDuration;

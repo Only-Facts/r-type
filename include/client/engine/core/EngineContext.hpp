@@ -1,6 +1,8 @@
 #ifndef RTYPE_ENGINE_ENGINECONTEXT_HPP
 #define RTYPE_ENGINE_ENGINECONTEXT_HPP
 
+#include "engine/core/FrameStats.hpp"
+
 namespace rtype::engine {
   class ActionMap;
   class AudioService;
@@ -22,6 +24,8 @@ namespace rtype::engine {
     AudioService& audio;
     SceneManager& scenes;
     IBackend& backend;
+    const FrameStats& stats;
+    DebugState& debug;
   };
 }
 

@@ -20,6 +20,7 @@ namespace rtype::engine {
   ///   [window]  width, height, title, framerate, vsync
   ///   [input]   action -> keys bindings
   ///   [audio]   enabled, muted, master/music/sfx volumes
+  ///   [debug]   overlay font, toggle action, initial visibility
   /// The game only registers scenes and calls run().
   class GameEngine {
   public:
@@ -43,6 +44,7 @@ namespace rtype::engine {
   private:
     void update(float dt);
     void render();
+    void updateStats(float dt);
 
     static WindowConfig makeWindowConfig(const Config& config);
     static std::unique_ptr<IBackend> makeBackend(const std::string& name, const WindowConfig& window);
@@ -58,6 +60,11 @@ namespace rtype::engine {
     Color _clearColor;
     std::string _quitAction;
     std::string _muteAction;
+    std::string _debugAction;
+    FrameStats _stats;
+    DebugState _debug;
+    float _statsElapsed{0.0f};
+    int _statsFrames{0};
     EngineContext _context;
   };
 }

@@ -8,10 +8,8 @@
 #include "engine/resources/ResourceManager.hpp"
 #include "engine/systems/AnimationSystem.hpp"
 #include "engine/systems/InterpolationSystem.hpp"
-#include "engine/systems/LifetimeSystem.hpp"
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
-#include "engine/systems/ScreenAnchorSystem.hpp"
 #include "exception.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
@@ -64,8 +62,6 @@ namespace rtype::game {
     addSystem<engine::MovementSystem>();
     addSystem<engine::ParallaxSystem>(_context.window);
     addSystem<engine::InterpolationSystem>();
-    addSystem<engine::ScreenAnchorSystem>(_context.window);
-    addSystem<engine::LifetimeSystem>();
 
     StarfieldSpawner starfield(_registry, _factory);
     starfield.spawn(StarfieldSpawner::loadSettings(_context.config, SECTION_STARFIELD), _context.window.getSize());

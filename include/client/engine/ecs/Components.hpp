@@ -49,6 +49,13 @@ namespace rtype::engine {
     Vector2f offset{0.0f, 0.0f};  ///< In pixels.
   };
 
+  /// Periodically shows / hides the entity's sprite and text.
+  struct BlinkComponent {
+    float period{1.0f};        ///< Seconds for a full on + off cycle.
+    float visibleRatio{0.6f};  ///< Share of the period during which it is visible.
+    float elapsed{0.0f};
+  };
+
   /// Destroys the entity after `remaining` seconds (notifications, effects).
   struct LifetimeComponent {
     float remaining{1.0f};

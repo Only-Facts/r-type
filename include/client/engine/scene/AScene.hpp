@@ -7,12 +7,16 @@
 #include "engine/ecs/SystemPipeline.hpp"
 #include "engine/scene/IScene.hpp"
 #include "engine/systems/RenderSystem.hpp"
+#include "engine/tools/DebugOverlay.hpp"
 #include <utility>
 
 namespace rtype::engine {
   /// Base class for ECS scenes: owns a Registry, a system pipeline and a renderer.
   /// A concrete scene only declares which systems it needs and which entities it
   /// spawns (onInit), plus its per-frame logic (onUpdate).
+  ///
+  /// Every scene also gets, for free, after its own systems:
+  ///   ScreenAnchorSystem, BlinkSystem, LifetimeSystem (UI basics) and the DebugOverlay.
   class AScene : public IScene {
   public:
     explicit AScene(EngineContext& context);
@@ -43,6 +47,8 @@ namespace rtype::engine {
     RenderSystem _renderer;
 
   private:
+    SystemPipeline _builtinSystems;
+    DebugOverlay _debugOverlay;
     bool _initialized{false};
   };
 }

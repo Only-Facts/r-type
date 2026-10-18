@@ -3,6 +3,7 @@
 #include "engine/config/Config.hpp"
 #include "exception.hpp"
 #include "game/GameScene.hpp"
+#include "game/TitleScene.hpp"
 #include "variables.hpp"
 #include <charconv>
 #include <cstring>
@@ -68,8 +69,9 @@ int main(int argc, const char* argv[]) {
           " (backend: " + engine.getBackendName() + ")").c_str());
 
     auto& scenes = engine.getSceneManager();
+    scenes.addScene("title", std::make_shared<rtype::game::TitleScene>(engine.getContext()));
     scenes.addScene("game", std::make_shared<rtype::game::GameScene>(engine.getContext()));
-    scenes.changeScene(cfg.getString("engine", "start_scene", "game"));
+    scenes.changeScene(cfg.getString("engine", "start_scene", "title"));
 
     engine.run();
     return SUCCESS;

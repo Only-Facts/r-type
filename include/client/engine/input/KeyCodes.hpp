@@ -18,6 +18,8 @@ namespace rtype::engine {
     KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ,
     KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT,
     KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    Tab, Backspace,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
     Count
   };
 

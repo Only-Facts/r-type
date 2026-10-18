@@ -15,8 +15,10 @@ namespace rtype::engine {
       _clearColor(_config.getColor("engine", "clear_color", Color{0, 0, 0, 255})),
       _quitAction(_config.getString("engine", "quit_action", "")),
       _muteAction(_config.getString("engine", "mute_action", "")),
+      _debugAction(_config.getString("debug", "toggle_action", "")),
       _context{_config, _backend->getWindow(), _backend->getInput(), _actions, _resources, _audio,
-               _sceneManager, *_backend} {
+               _sceneManager, *_backend, _stats, _debug} {
+    _debug.overlayVisible = _config.getBool("debug", "visible", false);
     _actions.loadFromConfig(_config, "input");
     _audio.loadSettings(_config, "audio");
 
@@ -35,7 +37,9 @@ namespace rtype::engine {
       _backend->pollEvents();
       if (!window.isOpen()) break;
 
-      update(_clock.tick());
+      const float dt = _clock.tick();
+      updateStats(dt);
+      update(dt);
       render();
     }
   }
@@ -50,9 +54,22 @@ namespace rtype::engine {
       return;
     }
     if (!_muteAction.empty() && _actions.isJustPressed(_muteAction)) _audio.toggleMute();
+    if (!_debugAction.empty() && _actions.isJustPressed(_debugAction)) _debug.overlayVisible = !_debug.overlayVisible;
 
     _sceneManager.update(dt);
     _audio.update();
+  }
+
+  void GameEngine::updateStats(float dt) {
+    constexpr float window = 0.5f;  // seconds averaged per sample
+    _statsElapsed += dt;
+    ++_statsFrames;
+    if (_statsElapsed >= window) {
+      _stats.fps = static_cast<float>(_statsFrames) / _statsElapsed;
+      _stats.frameTimeMs = 1000.0f * _statsElapsed / static_cast<float>(_statsFrames);
+      _statsElapsed = 0.0f;
+      _statsFrames = 0;
+    }
   }
 
   void GameEngine::render() {

@@ -15,12 +15,22 @@ namespace rtype::backend {
     _keyMap[sf::Keyboard::Key::Space] = KeyCode::Space;
     _keyMap[sf::Keyboard::Key::Escape] = KeyCode::Escape;
     _keyMap[sf::Keyboard::Key::Enter] = KeyCode::Enter;
+    _keyMap[sf::Keyboard::Key::Tab] = KeyCode::Tab;
+    _keyMap[sf::Keyboard::Key::Backspace] = KeyCode::Backspace;
 
     // A..Z are contiguous in both enums.
     constexpr int letterCount = 26;
     for (int i = 0; i < letterCount; ++i) {
       const auto sfKey = static_cast<sf::Keyboard::Key>(static_cast<int>(sf::Keyboard::Key::A) + i);
       const auto code = static_cast<KeyCode>(static_cast<std::size_t>(KeyCode::KeyA) + static_cast<std::size_t>(i));
+      _keyMap[sfKey] = code;
+    }
+
+    // F1..F12 are contiguous in both enums too.
+    constexpr int functionKeyCount = 12;
+    for (int i = 0; i < functionKeyCount; ++i) {
+      const auto sfKey = static_cast<sf::Keyboard::Key>(static_cast<int>(sf::Keyboard::Key::F1) + i);
+      const auto code = static_cast<KeyCode>(static_cast<std::size_t>(KeyCode::F1) + static_cast<std::size_t>(i));
       _keyMap[sfKey] = code;
     }
   }

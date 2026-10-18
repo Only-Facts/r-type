@@ -2,6 +2,7 @@
 #define RTYPE_GAME_HUD_HPP
 
 #include "engine/config/Config.hpp"
+#include "engine/core/TextTemplate.hpp"
 #include "engine/ecs/Registry.hpp"
 #include "engine/gfx/GfxTypes.hpp"
 #include <string>
@@ -14,7 +15,7 @@ namespace rtype::game {
   /// so wording and language can change without recompiling.
   class Hud {
   public:
-    using Params = std::unordered_map<std::string, std::string>;
+    using Params = engine::TemplateParams;
 
     struct Settings {
       std::string fontId{"font_hud"};
@@ -29,7 +30,6 @@ namespace rtype::game {
     };
 
     static Settings loadSettings(const engine::Config& config, const std::string& section);
-    static std::string format(const std::string& templ, const Params& params);
 
     Hud(engine::Registry& registry, Settings settings);
 
