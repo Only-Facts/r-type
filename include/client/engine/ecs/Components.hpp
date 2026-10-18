@@ -56,6 +56,21 @@ namespace rtype::engine {
     float elapsed{0.0f};
   };
 
+  /// Hit points, as last reported by the authoritative source (the server).
+  struct HealthComponent {
+    int current{1};
+    int max{1};
+  };
+
+  /// Temporarily recolors the sprite (hit feedback), then restores its tint.
+  struct FlashComponent {
+    Color color{255, 80, 80, 255};
+    float duration{0.15f};
+    float remaining{0.0f};           ///< > 0 while flashing; set it to `duration` to trigger.
+    std::optional<Color> savedTint{};
+    bool active{false};
+  };
+
   /// Destroys the entity after `remaining` seconds (notifications, effects).
   struct LifetimeComponent {
     float remaining{1.0f};

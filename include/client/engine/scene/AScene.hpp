@@ -16,7 +16,7 @@ namespace rtype::engine {
   /// spawns (onInit), plus its per-frame logic (onUpdate).
   ///
   /// Every scene also gets, for free, after its own systems:
-  ///   ScreenAnchorSystem, BlinkSystem, LifetimeSystem (UI basics) and the DebugOverlay.
+  ///   ScreenAnchorSystem, BlinkSystem, FlashSystem, LifetimeSystem and the DebugOverlay.
   class AScene : public IScene {
   public:
     explicit AScene(EngineContext& context);

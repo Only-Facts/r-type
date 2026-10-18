@@ -22,8 +22,8 @@
 //    (PacketStreamReader throws on overflow), packets that do not come from the
 //    server port are ignored, and the sequence filter only trusts fully parsed
 //    packets (a forged huge sequence number can no longer freeze the game).
-//  - typed entities (SpawnEntity, see ProtocolExtension.hpp) and a "shoot" byte
-//    at the end of PlayerInput (ignored by servers that do not read it).
+//  - typed entities (SpawnEntity), health (HealthUpdate), see ProtocolExtension.hpp,
+//    and a "shoot" byte at the end of PlayerInput (ignored by servers that do not read it).
 
 namespace rtype::client {
   class ClientNetworkManager {
@@ -31,6 +31,9 @@ namespace rtype::client {
     using SpawnCallback =
       std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, bool isLocal)>;
     using DestroyCallback = std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType)>;
+    /// (entity, netId, type, newHealth, maxHealth, previousHealth)
+    using HealthCallback =
+      std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, int, int, int)>;
 
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
@@ -38,6 +41,8 @@ namespace rtype::client {
     void setOnEntitySpawned(SpawnCallback callback) { _onSpawn = std::move(callback); }
     /// Called right before the entity is destroyed (player left, enemy killed...).
     void setOnEntityDestroyed(DestroyCallback callback) { _onDestroy = std::move(callback); }
+    /// Called after the entity's HealthComponent was updated from a HealthUpdate.
+    void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -135,6 +140,13 @@ namespace rtype::client {
         spawnEntity(netId, type, x, y);
         return;
       }
+      if (header.type == network::ext::HEALTH_UPDATE) {
+        network::NetworkId netId;
+        std::uint8_t health, maxHealth;
+        reader >> netId >> health >> maxHealth;
+        updateHealth(netId, health, maxHealth);
+        return;
+      }
 
       switch (header.type) {
         case network::PacketType::ConnectAck: {
@@ -195,6 +207,17 @@ namespace rtype::client {
       }
     }
 
+    void updateHealth(network::NetworkId netId, int health, int maxHealth) {
+      auto it = _networkToEcs.find(netId);
+      if (it == _networkToEcs.end()) return;
+
+      const engine::Entity entity = it->second.entity;
+      auto* component = _registry.getComponent<engine::HealthComponent>(entity);
+      const int previous = component ? component->current : maxHealth;
+      _registry.addComponent(entity, engine::HealthComponent{health, maxHealth});
+      if (_onHealth) _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
+    }
+
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) {
@@ -212,6 +235,7 @@ namespace rtype::client {
     engine::Registry& _registry;
     SpawnCallback _onSpawn;
     DestroyCallback _onDestroy;
+    HealthCallback _onHealth;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
     std::vector<network::EntityStateData> _snapshot;

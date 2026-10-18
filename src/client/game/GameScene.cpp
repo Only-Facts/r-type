@@ -3,6 +3,7 @@
 #include "engine/config/Config.hpp"
 #include "engine/ecs/Components.hpp"
 #include "engine/input/ActionMap.hpp"
+#include "engine/input/KeyCodes.hpp"
 #include "engine/platform/IBackend.hpp"
 #include "engine/platform/IWindow.hpp"
 #include "engine/resources/ResourceManager.hpp"
@@ -13,6 +14,7 @@
 #include "exception.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 
 namespace rtype::game {
@@ -41,7 +43,7 @@ namespace rtype::game {
     : AScene(context),
       _socket(context.backend.createUdpSocket()),
       _network(*_socket, _registry),
-      _hud(_registry, Hud::loadSettings(context.config, SECTION_HUD)),
+      _hud(_registry, _factory, Hud::loadSettings(context.config, SECTION_HUD)),
       _host(context.config.getString(SECTION_NETWORK, "host", "127.0.0.1")),
       _port(readPort(context.config)),
       _connectTimeout(context.config.getFloat(SECTION_NETWORK, "connect_timeout", 5.0f)),
@@ -50,7 +52,9 @@ namespace rtype::game {
       _maxPlayers(context.config.getInt(SECTION_GAME, "max_players", 4)),
       _firstPlayerId(static_cast<network::NetworkId>(std::max(0, context.config.getInt(SECTION_GAME, "first_player_id", 1)))),
       _playerZ(context.config.getInt(SECTION_GAME, "player_z", 10)),
-      _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)) {
+      _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
+      _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
+      _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
@@ -65,6 +69,11 @@ namespace rtype::game {
       _context.resources.get(profile->asset, engine::AssetType::Texture);
       if (!profile->spawnSound.empty()) _context.resources.get(profile->spawnSound, engine::AssetType::Sound);
       if (!profile->destroySound.empty()) _context.resources.get(profile->destroySound, engine::AssetType::Sound);
+      if (!profile->hitSound.empty()) _context.resources.get(profile->hitSound, engine::AssetType::Sound);
+    }
+    for (const char* key : {"join_sound", "leave_sound", "player_hit_sound", "player_death_sound", "game_over_sound"}) {
+      const std::string sound = _context.config.getString(SECTION_GAME, key);
+      if (!sound.empty()) _context.resources.get(sound, engine::AssetType::Sound);
     }
   }
 
@@ -96,12 +105,19 @@ namespace rtype::game {
     _network.setOnEntityDestroyed([this](engine::Entity, network::NetworkId netId, network::ext::EntityType type) {
       onEntityDestroyed(netId, type);
     });
+    _network.setOnHealthChanged([this](engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
+                                       int health, int maxHealth, int previous) {
+      onHealthChanged(entity, netId, type, health, maxHealth, previous);
+    });
     _network.connectToServer(_host, _port);
   }
 
   void GameScene::onUpdate(float dt) {
     const engine::ActionMap& actions = _context.actions;
-    _network.sendInputs(actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
+    if (_localDead) {
+      // Keep the connection alive (the server times out silent clients) without moving.
+      _network.sendInputs(false, false, false, false, false);
+    } else _network.sendInputs(actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
                         actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT),
                         actions.isActive(ACTION_SHOOT));
     _network.update(dt);
@@ -155,6 +171,57 @@ namespace rtype::game {
     playSoundId(profile->spawnSound);
   }
 
+  void GameScene::onHealthChanged(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
+                                  int health, int maxHealth, int previous) {
+    const bool isPlayer = type == network::ext::ENTITY_PLAYER;
+    const bool isLocal = isPlayer && netId == _network.getLocalNetId();
+
+    if (isLocal) _hud.setHealth(health, maxHealth);
+
+    if (health < previous) {
+      flash(entity);
+      if (isPlayer) playSound("player_hit_sound");
+      else if (const EntityProfile* profile = _catalog.find(type)) playSoundId(profile->hitSound);
+    }
+
+    if (health <= 0 && previous > 0 && isPlayer) {
+      _deadPlayers.insert(netId);
+      if (isLocal) {
+        onLocalPlayerDestroyed();
+      } else {
+        playSound("player_death_sound");
+        _hud.notify("player_destroyed_text", {{"player", std::to_string(playerNumber(netId))}});
+      }
+    }
+  }
+
+  void GameScene::onLocalPlayerDestroyed() {
+    _localDead = true;
+    playSound("player_death_sound");
+    playSound("game_over_sound");
+
+    std::string keys;
+    for (engine::KeyCode key : _context.actions.getBindings(_context.config.getString("engine", "quit_action", "quit"))) {
+      std::string name(engine::keyCodeToString(key));
+      for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      keys += (keys.empty() ? "" : " / ") + name;
+    }
+    _hud.showCenterMessage("destroyed_text", "destroyed_hint_text", {{"keys", keys}},
+                           _context.config.getColor(SECTION_HUD, "destroyed_color", engine::Color{255, 90, 90, 255}));
+  }
+
+  void GameScene::flash(engine::Entity entity) {
+    if (_hitFlashDuration <= 0.0f) return;
+    auto* flashComponent = _registry.getComponent<engine::FlashComponent>(entity);
+    if (!flashComponent) {
+      engine::FlashComponent component;
+      component.color = _hitFlashColor;
+      component.duration = _hitFlashDuration;
+      flashComponent = &_registry.addComponent(entity, component);
+    }
+    flashComponent->remaining = flashComponent->duration;
+  }
+
   void GameScene::onEntityDestroyed(network::NetworkId netId, network::ext::EntityType type) {
     if (type == network::ext::ENTITY_PLAYER) {
       onPlayerDestroyed(netId);
@@ -177,6 +244,7 @@ namespace rtype::game {
 
   void GameScene::onPlayerDestroyed(network::NetworkId netId) {
     _players.erase(netId);
+    if (_deadPlayers.erase(netId) > 0) return;  // already announced as destroyed
     playSound("leave_sound");
     _hud.notify("left_text", {{"player", std::to_string(playerNumber(netId))}});
   }

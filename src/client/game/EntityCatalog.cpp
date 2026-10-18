@@ -28,6 +28,7 @@ namespace rtype::game {
       profile.interpolationSpeed = config.getFloat(profileSection, "interpolation_speed", profile.interpolationSpeed);
       profile.spawnSound = config.getString(profileSection, "spawn_sound");
       profile.destroySound = config.getString(profileSection, "destroy_sound");
+      profile.hitSound = config.getString(profileSection, "hit_sound");
 
       _profiles[static_cast<std::uint8_t>(id)] = std::move(profile);
     }

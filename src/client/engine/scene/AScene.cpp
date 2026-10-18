@@ -2,6 +2,7 @@
 #include "engine/platform/IWindow.hpp"
 #include "engine/resources/ResourceManager.hpp"
 #include "engine/systems/BlinkSystem.hpp"
+#include "engine/systems/FlashSystem.hpp"
 #include "engine/systems/LifetimeSystem.hpp"
 #include "engine/systems/ScreenAnchorSystem.hpp"
 
@@ -13,6 +14,7 @@ namespace rtype::engine {
       _debugOverlay(_registry, context, _renderer) {
     _builtinSystems.add<ScreenAnchorSystem>(context.window);
     _builtinSystems.add<BlinkSystem>();
+    _builtinSystems.add<FlashSystem>();
     _builtinSystems.add<LifetimeSystem>();
   }
 

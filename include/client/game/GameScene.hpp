@@ -31,6 +31,10 @@ namespace rtype::game {
     void onEntityDestroyed(network::NetworkId netId, network::ext::EntityType type);
     void onPlayerSpawned(engine::Entity entity, network::NetworkId netId, bool isLocal);
     void onPlayerDestroyed(network::NetworkId netId);
+    void onHealthChanged(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
+                         int health, int maxHealth, int previous);
+    void onLocalPlayerDestroyed();
+    void flash(engine::Entity entity);
     void validateCatalog() const;
     void updateConnectionStatus(float dt);
 
@@ -45,6 +49,8 @@ namespace rtype::game {
     EntityCatalog _catalog;
     std::vector<network::ext::EntityType> _warnedTypes;
     std::unordered_set<network::NetworkId> _players;
+    std::unordered_set<network::NetworkId> _deadPlayers;
+    bool _localDead{false};
 
     std::string _host;
     unsigned short _port;
@@ -59,6 +65,8 @@ namespace rtype::game {
     network::NetworkId _firstPlayerId;
     int _playerZ;
     float _interpolationSpeed;
+    engine::Color _hitFlashColor;
+    float _hitFlashDuration;
   };
 }
 

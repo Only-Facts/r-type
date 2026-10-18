@@ -16,6 +16,7 @@ namespace rtype::game {
     float interpolationSpeed{15.0f};  ///< 0 = snap to the server position.
     std::string spawnSound;
     std::string destroySound;
+    std::string hitSound;
   };
 
   /// Network entity type id -> profile, read from the config:
