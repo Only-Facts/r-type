@@ -5,8 +5,6 @@
 #include "engine/ecs/ISystem.hpp"
 
 namespace rtype::engine {
-  /// Applies FlashComponent: overrides the sprite tint while `remaining > 0`,
-  /// then gives the sprite its previous tint back.
   class FlashSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {

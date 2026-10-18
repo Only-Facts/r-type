@@ -20,7 +20,7 @@ namespace rtype::engine {
   void ActionMap::loadFromConfig(const Config& config, const std::string& section) {
     for (const auto& action : config.getKeys(section)) {
       clear(action);
-      _bindings[action];  // an action bound to nothing still exists
+      _bindings[action]; 
       for (const auto& keyName : config.getList(section, action)) {
         auto key = keyCodeFromString(keyName);
         if (!key)

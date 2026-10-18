@@ -6,7 +6,6 @@
 #include <memory>
 
 namespace rtype::engine {
-  /// Backend-agnostic drawable sprite.
   class ISprite {
   public:
     virtual ~ISprite() = default;

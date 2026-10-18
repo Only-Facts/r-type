@@ -7,7 +7,6 @@
 #include <vector>
 
 namespace rtype::engine {
-  /// Ordered list of systems, run once per frame in insertion order.
   class SystemPipeline {
   public:
     template<typename T, typename... Args>

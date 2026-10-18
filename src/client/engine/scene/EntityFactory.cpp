@@ -13,7 +13,7 @@ namespace rtype::engine {
   }
 
   void EntityFactory::attachSprite(Entity entity, const std::string& assetId, int zIndex) {
-    const AssetDescriptor& desc = _resources.get(assetId);  // throws on unknown id
+    const AssetDescriptor& desc = _resources.get(assetId); 
 
     if (!_registry.getComponent<TransformComponent>(entity))
       _registry.addComponent(entity, TransformComponent{});

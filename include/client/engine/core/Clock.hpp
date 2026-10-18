@@ -4,8 +4,7 @@
 #include <chrono>
 
 namespace rtype::engine {
-  /// Frame timer based on std::chrono, so time flow does not depend on the backend
-  /// nor on CPU speed. The delta is clamped to avoid huge jumps after a freeze.
+
   class Clock {
   public:
     explicit Clock(float maxDelta = 0.25f)

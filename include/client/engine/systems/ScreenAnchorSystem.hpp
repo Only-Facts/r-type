@@ -6,7 +6,6 @@
 #include "engine/platform/IWindow.hpp"
 
 namespace rtype::engine {
-  /// Places HUD entities relative to the window, so the layout follows the resolution.
   class ScreenAnchorSystem : public ISystem {
   public:
     explicit ScreenAnchorSystem(const IWindow& window) : _window(window) {}

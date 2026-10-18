@@ -6,7 +6,6 @@
 #include <cmath>
 
 namespace rtype::engine {
-  /// Toggles visibility of entities with a BlinkComponent.
   class BlinkSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {

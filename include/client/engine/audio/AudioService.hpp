@@ -8,9 +8,6 @@
 namespace rtype::engine {
   class Config;
 
-  /// Id-based audio for games: play("explosion"), playMusic("music_stage1").
-  /// Applies the [audio] settings (enabled, master/music/sfx volumes, mute),
-  /// which are also an accessibility feature (players can lower or cut sound).
   class AudioService {
   public:
     AudioService(IAudioManager& backend, const ResourceManager& resources)

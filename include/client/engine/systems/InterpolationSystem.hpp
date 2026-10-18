@@ -5,8 +5,7 @@
 #include "engine/ecs/ISystem.hpp"
 
 namespace rtype::engine {
-  /// Moves the transform toward `targetPosition`. The network layer only writes
-  /// targets; smoothing is a rendering concern, so it lives in the engine.
+
   class InterpolationSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {

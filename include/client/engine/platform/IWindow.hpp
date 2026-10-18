@@ -6,8 +6,6 @@
 #include "engine/gfx/IText.hpp"
 
 namespace rtype::engine {
-  /// Render target abstraction. Event polling and timing are no longer the window's
-  /// job: events are pumped by IBackend, time is measured by the engine Clock.
   class IWindow {
   public:
     virtual ~IWindow() = default;

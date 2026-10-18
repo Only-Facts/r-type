@@ -44,8 +44,6 @@ namespace rtype::game {
     const engine::Color accent = cfg.getColor(SECTION, "accent_color", engine::Color{120, 200, 255, 255});
     const engine::Color dim = cfg.getColor(SECTION, "dim_color", engine::Color{170, 170, 190, 255});
 
-    // Title block
-    // Layout, as fractions of the window height (positions) and of the text size (spacings).
     const float titleY = cfg.getFloat(SECTION, "title_y", 0.22f);
     const float promptY = cfg.getFloat(SECTION, "prompt_y", 0.45f);
     const float controlsY = cfg.getFloat(SECTION, "controls_y", 0.58f);
@@ -58,7 +56,6 @@ namespace rtype::game {
     addText(cfg.getString(SECTION, "subtitle_text", ""), titleY, static_cast<float>(titleSize) * subtitleSpacing,
             readSize(cfg, "subtitle_size", 14), dim);
 
-    // Blinking prompt, with the real keys bound to the start action
     const engine::Entity prompt = addText(
       engine::formatTemplate(cfg.getString(SECTION, "prompt_text", "Press {keys} to start"), {{"keys", keysFor(_startAction)}}),
       promptY, 0.0f, readSize(cfg, "prompt_size", 20), accent);
@@ -69,7 +66,6 @@ namespace rtype::game {
       _registry.addComponent(prompt, blinkComponent);
     }
 
-    // Controls, generated from the [input] bindings
     const unsigned int controlSize = readSize(cfg, "controls_size", 14);
     const float lineHeight = static_cast<float>(controlSize) * lineSpacing;
     float y = 0.0f;
@@ -83,7 +79,6 @@ namespace rtype::game {
               controlsY, y, controlSize, white);
     }
 
-    // Server address, bottom of the screen
     addText(engine::formatTemplate(cfg.getString(SECTION, "server_text", "Server {host}:{port}"),
                                    {{"host", cfg.getString("network", "host", "127.0.0.1")},
                                     {"port", cfg.getString("network", "port", "4242")}}),

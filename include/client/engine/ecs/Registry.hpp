@@ -83,7 +83,6 @@ namespace rtype::engine {
       getPool<T>()->remove(entity);
     }
 
-    /// Iterates every entity owning a T: func(Entity, T&).
     template<typename T, typename Func>
     void view(Func&& func) {
       auto& data = getPool<T>()->getData();
@@ -91,8 +90,7 @@ namespace rtype::engine {
         func(entity, component);
     }
 
-    /// Iterates every entity owning ALL the listed components:
-    /// func(Entity, T&, Others&...). Do not add/remove T components inside func.
+
     template<typename T, typename... Others, typename Func>
     void each(Func&& func) {
       auto& data = getPool<T>()->getData();

@@ -17,7 +17,7 @@ namespace rtype::engine {
 
     std::sort(_drawList.begin(), _drawList.end(), [](const DrawItem& a, const DrawItem& b) {
       if (a.zIndex != b.zIndex) return a.zIndex < b.zIndex;
-      if (a.isText != b.isText) return !a.isText;  // sprite under text at equal depth
+      if (a.isText != b.isText) return !a.isText;  
       return a.entity < b.entity;
     });
 
@@ -26,7 +26,6 @@ namespace rtype::engine {
       else drawSprite(registry, window, item);
     }
 
-    // Release backend objects of entities that were destroyed or hidden this frame.
     prune(_sprites);
     prune(_texts);
   }
@@ -56,7 +55,6 @@ namespace rtype::engine {
     CachedText& cached = resolveText(item.entity, component.fontId);
     IText& text = *cached.text;
 
-    // Re-layout only when something changed.
     if (cached.lastString != component.text) {
       text.setString(component.text);
       cached.lastString = component.text;

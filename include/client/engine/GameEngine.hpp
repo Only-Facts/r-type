@@ -15,13 +15,7 @@
 #include <string>
 
 namespace rtype::engine {
-  /// Entry point of the engine. Everything is driven by the config:
-  ///   [engine]  backend, asset manifest, preload, quit/mute actions, clear color
-  ///   [window]  width, height, title, framerate, vsync
-  ///   [input]   action -> keys bindings
-  ///   [audio]   enabled, muted, master/music/sfx volumes
-  ///   [debug]   overlay font, toggle action, initial visibility
-  /// The game only registers scenes and calls run().
+
   class GameEngine {
   public:
     explicit GameEngine(Config config);

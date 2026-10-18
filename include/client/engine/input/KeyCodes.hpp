@@ -23,11 +23,9 @@ namespace rtype::engine {
     Count
   };
 
-  /// Converts a key name from a config file ("Up", "Space", "Z"...) to a KeyCode.
-  /// Case-insensitive. Returns std::nullopt for unknown names.
+
   std::optional<KeyCode> keyCodeFromString(std::string_view name);
 
-  /// Inverse of keyCodeFromString, useful for logs and settings menus.
   std::string_view keyCodeToString(KeyCode key);
 }
 

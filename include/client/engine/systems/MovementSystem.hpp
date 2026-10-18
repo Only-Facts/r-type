@@ -5,7 +5,6 @@
 #include "engine/ecs/ISystem.hpp"
 
 namespace rtype::engine {
-  /// position += velocity * dt (time-based, not frame-based).
   class MovementSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {

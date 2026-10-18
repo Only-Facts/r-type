@@ -14,10 +14,7 @@
 #include <vector>
 
 namespace rtype::engine {
-  /// Draws every entity with a Transform and a Sprite and/or Text component,
-  /// all sorted together by zIndex. It owns the backend objects (one per entity,
-  /// created on demand from the asset id and released when the entity disappears),
-  /// so components stay pure data.
+
   class RenderSystem {
   public:
     explicit RenderSystem(ResourceManager& resources) : _resources(resources) {}

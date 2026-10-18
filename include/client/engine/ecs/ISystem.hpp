@@ -4,7 +4,6 @@
 #include "engine/ecs/Registry.hpp"
 
 namespace rtype::engine {
-  /// A system holds the logic, components hold the data.
   class ISystem {
   public:
     virtual ~ISystem() = default;

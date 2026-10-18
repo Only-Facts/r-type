@@ -7,8 +7,7 @@
 namespace rtype::engine {
   using TemplateParams = std::unordered_map<std::string, std::string>;
 
-  /// Replaces every {key} of `templ` with its value: "Player {n}" + {n: 2} -> "Player 2".
-  /// Lets every displayed string live in the config instead of the code.
+
   inline std::string formatTemplate(const std::string& templ, const TemplateParams& params) {
     std::string result = templ;
     for (const auto& [key, value] : params) {

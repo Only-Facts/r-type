@@ -7,10 +7,6 @@
 #include <string>
 
 namespace rtype::engine {
-  /// In-game metrics (FPS, frame time, drawn sprites and texts).
-  /// Available in every AScene, configured by the [debug] section:
-  ///   font, text_size, color, margin, refresh, text (template).
-  /// Visibility is engine-wide (EngineContext::debug), toggled by [debug] toggle_action.
   class DebugOverlay {
   public:
     DebugOverlay(Registry& registry, EngineContext& context, const RenderSystem& renderer)

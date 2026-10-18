@@ -5,7 +5,6 @@ namespace rtype::backend {
     : _font(std::move(font)), _text(*_font) {}
 
   void SFMLText::setString(const std::string& text) {
-    // Config strings are UTF-8 (accents in translated HUD texts must render).
     _text.setString(sf::String::fromUtf8(text.begin(), text.end()));
   }
 

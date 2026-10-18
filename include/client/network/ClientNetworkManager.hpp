@@ -13,17 +13,6 @@
 #include <utility>
 #include <vector>
 
-// Changes compared to the original version (existing packets unchanged):
-//  - no rendering: the network layer creates the entity (Transform, Velocity,
-//    NetworkId) and notifies the game through callbacks, which decide its look.
-//  - position smoothing moved to engine::InterpolationSystem; this class only
-//    writes TransformComponent::targetPosition.
-//  - robustness: a malformed packet is dropped instead of crashing the client
-//    (PacketStreamReader throws on overflow), packets that do not come from the
-//    server port are ignored, and the sequence filter only trusts fully parsed
-//    packets (a forged huge sequence number can no longer freeze the game).
-//  - typed entities (SpawnEntity), health (HealthUpdate), see ProtocolExtension.hpp,
-//    and a "shoot" byte at the end of PlayerInput (ignored by servers that do not read it).
 
 namespace rtype::client {
   class ClientNetworkManager {
@@ -31,7 +20,6 @@ namespace rtype::client {
     using SpawnCallback =
       std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, bool isLocal)>;
     using DestroyCallback = std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType)>;
-    /// (entity, netId, type, newHealth, maxHealth, previousHealth)
     using HealthCallback =
       std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, int, int, int)>;
 
@@ -39,9 +27,9 @@ namespace rtype::client {
       : _socket(socket), _registry(registry) {}
 
     void setOnEntitySpawned(SpawnCallback callback) { _onSpawn = std::move(callback); }
-    /// Called right before the entity is destroyed (player left, enemy killed...).
+
     void setOnEntityDestroyed(DestroyCallback callback) { _onDestroy = std::move(callback); }
-    /// Called after the entity's HealthComponent was updated from a HealthUpdate.
+
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
 
     void connectToServer(const std::string& host, unsigned short port) {
@@ -115,7 +103,7 @@ namespace rtype::client {
         try {
           handlePacket(data);
         } catch (const RtypeError&) {
-          ++_droppedPackets;  // truncated or malformed: drop it, keep running
+          ++_droppedPackets; 
         }
       }
     }
@@ -129,9 +117,9 @@ namespace rtype::client {
 
       if (header.magic != network::PROTOCOL_MAGIC) return;
       const bool isSync = header.type == network::PacketType::GameStateSync;
-      if (isSync && header.sequence <= _lastSyncSeq) return;  // late or duplicated snapshot
+      if (isSync && header.sequence <= _lastSyncSeq) return;  
 
-      // Extension packet, outside the PacketType enum until the team merges it.
+
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
         network::ext::EntityType type;
@@ -170,7 +158,6 @@ namespace rtype::client {
         case network::PacketType::GameStateSync: {
           std::uint16_t count;
           reader >> count;
-          // Parse everything first: a truncated snapshot is rejected as a whole.
           _snapshot.clear();
           for (std::uint16_t i = 0; i < count; ++i) {
             network::EntityStateData state{};
@@ -221,8 +208,7 @@ namespace rtype::client {
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) {
-        // Unknown entity in a snapshot: the spawn packet was lost. Players are the
-        // only entities the original protocol announces, so assume a player.
+
         spawnEntity(state.netId, network::ext::ENTITY_PLAYER, state.posX, state.posY);
         return;
       }

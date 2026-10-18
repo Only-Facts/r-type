@@ -10,9 +10,7 @@
 #include <vector>
 
 namespace rtype::game {
-  /// Builds the scrolling star-field as plain ECS entities
-  /// (Sprite + Transform + Velocity + Parallax). Every value comes from the config;
-  /// the engine systems (Movement, Parallax, Render) do the rest.
+
   class StarfieldSpawner {
   public:
     struct Settings {
@@ -33,7 +31,7 @@ namespace rtype::game {
       int planetAlpha{90};
 
       float wrapMargin{300.0f};
-      std::uint32_t seed{0};  ///< 0 = random each launch.
+      std::uint32_t seed{0};  
     };
 
     static Settings loadSettings(const engine::Config& config, const std::string& section);

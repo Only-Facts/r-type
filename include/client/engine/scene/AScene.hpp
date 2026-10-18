@@ -11,12 +11,7 @@
 #include <utility>
 
 namespace rtype::engine {
-  /// Base class for ECS scenes: owns a Registry, a system pipeline and a renderer.
-  /// A concrete scene only declares which systems it needs and which entities it
-  /// spawns (onInit), plus its per-frame logic (onUpdate).
-  ///
-  /// Every scene also gets, for free, after its own systems:
-  ///   ScreenAnchorSystem, BlinkSystem, FlashSystem, LifetimeSystem and the DebugOverlay.
+
   class AScene : public IScene {
   public:
     explicit AScene(EngineContext& context);
@@ -30,9 +25,7 @@ namespace rtype::engine {
     void render(IWindow& window) override;
 
   protected:
-    /// Called once, the first time the scene becomes active.
     virtual void onInit() = 0;
-    /// Called every frame, before the systems run.
     virtual void onUpdate(float dt);
 
     template<typename T, typename... Args>

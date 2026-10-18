@@ -5,7 +5,6 @@
 #include <string>
 
 namespace rtype::engine {
-  /// Backend-agnostic texture. Only the backend knows the concrete type.
   class ITexture {
   public:
     virtual ~ITexture() = default;

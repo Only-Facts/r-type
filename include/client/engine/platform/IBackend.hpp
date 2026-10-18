@@ -10,10 +10,7 @@
 #include <memory>
 
 namespace rtype::engine {
-  /// A backend groups every platform-specific service (window, input, textures,
-  /// fonts, audio, sockets). It is the only part of the client allowed to know the underlying
-  /// library. Swapping SFML for SDL or Raylib means writing a new IBackend,
-  /// nothing else changes.
+
   class IBackend {
   public:
     virtual ~IBackend() = default;
@@ -24,10 +21,8 @@ namespace rtype::engine {
     virtual IFontManager& getFonts() = 0;
     virtual IAudioManager& getAudio() = 0;
 
-    /// Pumps OS events into the window and the input manager.
     virtual void pollEvents() = 0;
 
-    /// Creates a UDP socket implemented with the backend's network module.
     virtual std::unique_ptr<network::INetworkSocket> createUdpSocket() = 0;
   };
 }

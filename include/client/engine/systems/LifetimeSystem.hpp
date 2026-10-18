@@ -6,7 +6,6 @@
 #include <vector>
 
 namespace rtype::engine {
-  /// Destroys entities whose LifetimeComponent runs out.
   class LifetimeSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {
@@ -15,7 +14,6 @@ namespace rtype::engine {
         lifetime.remaining -= dt;
         if (lifetime.remaining <= 0.0f) _expired.push_back(entity);
       });
-      // Destroy after the loop: erasing while iterating a pool is not allowed.
       for (Entity entity : _expired) registry.destroyEntity(entity);
     }
 

@@ -7,8 +7,7 @@
 #include <string>
 
 namespace rtype::engine {
-  /// Low-level texture cache, implemented by the backend.
-  /// Games never use it directly: they go through ResourceManager and asset ids.
+
   class ITextureManager {
   public:
     virtual ~ITextureManager() = default;

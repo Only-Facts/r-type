@@ -10,7 +10,6 @@
 #include <vector>
 
 namespace rtype::engine {
-  /// Creates backends by name (`[engine] backend = sfml` in the config).
   class BackendFactory {
   public:
     using Creator = std::function<std::unique_ptr<IBackend>(const WindowConfig&)>;

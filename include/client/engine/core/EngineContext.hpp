@@ -13,8 +13,6 @@ namespace rtype::engine {
   class ResourceManager;
   class SceneManager;
 
-  /// Everything a scene may ask the engine for. Only interfaces and engine
-  /// services: a scene can never reach a backend-specific type.
   struct EngineContext {
     const Config& config;
     IWindow& window;

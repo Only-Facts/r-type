@@ -7,9 +7,7 @@
 #include <string>
 
 namespace rtype::game {
-  /// Title screen: star-field, title, blinking "press start", server address and a
-  /// controls list generated from the live [input] bindings (remapped keys show up
-  /// automatically). Every text, size and color comes from the [title] section.
+
   class TitleScene : public engine::AScene {
   public:
     explicit TitleScene(engine::EngineContext& context);

@@ -13,10 +13,7 @@
 #include <vector>
 
 namespace rtype::game {
-  /// The R-Type in-game scene. It only talks to engine interfaces: it asks for
-  /// assets and sounds by id, reads actions by name, gets its socket from the
-  /// backend, and reads its tuning from the [game], [network], [hud],
-  /// [starfield] and [entity_types] config sections.
+
   class GameScene : public engine::AScene {
   public:
     explicit GameScene(engine::EngineContext& context);

@@ -7,8 +7,7 @@
 #include <string>
 
 namespace rtype::engine {
-  /// Builds entities from asset ids. Validates the id against the manifest and
-  /// adds the animation component when the asset is animated.
+
   class EntityFactory {
   public:
     EntityFactory(Registry& registry, const ResourceManager& resources)

@@ -7,28 +7,17 @@
 #include <unordered_map>
 
 namespace rtype::game {
-  /// How the client shows one networked entity type (Bydos, missiles...).
   struct EntityProfile {
     std::string name;
     std::string asset;
     int zIndex{0};
     float scale{1.0f};
-    float interpolationSpeed{15.0f};  ///< 0 = snap to the server position.
+    float interpolationSpeed{15.0f}; 
     std::string spawnSound;
     std::string destroySound;
     std::string hitSound;
   };
 
-  /// Network entity type id -> profile, read from the config:
-  ///
-  ///   [entity_types]
-  ///   1 = bydos_slave
-  ///
-  ///   [entity:bydos_slave]
-  ///   asset = enemy
-  ///   destroy_sound = sfx_explosion
-  ///
-  /// Adding an enemy or a weapon on the client = a few config lines, no code.
   class EntityCatalog {
   public:
     void load(const engine::Config& config, const std::string& section);

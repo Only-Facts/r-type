@@ -61,7 +61,7 @@ namespace rtype::engine {
   }
 
   void GameEngine::updateStats(float dt) {
-    constexpr float window = 0.5f;  // seconds averaged per sample
+    constexpr float window = 0.5f; 
     _statsElapsed += dt;
     ++_statsFrames;
     if (_statsElapsed >= window) {

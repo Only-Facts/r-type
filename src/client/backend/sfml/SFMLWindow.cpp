@@ -27,7 +27,6 @@ namespace rtype::backend {
   }
 
   void SFMLWindow::draw(const engine::ISprite& sprite) {
-    // Every sprite in this backend is an SFMLSprite (created by SFMLTextureManager).
     const auto* sfmlSprite = dynamic_cast<const SFMLSprite*>(&sprite);
     if (sfmlSprite && sfmlSprite->getNativeSprite()) _window.draw(*sfmlSprite->getNativeSprite());
   }

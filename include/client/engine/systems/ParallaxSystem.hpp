@@ -6,8 +6,6 @@
 #include "engine/platform/IWindow.hpp"
 
 namespace rtype::engine {
-  /// Wraps entities around the screen horizontally, in both directions.
-  /// Uses the live window size, so it keeps working after a resolution change.
   class ParallaxSystem : public ISystem {
   public:
     explicit ParallaxSystem(const IWindow& window) : _window(window) {}

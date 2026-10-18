@@ -11,7 +11,6 @@ namespace rtype::engine {
     virtual void init() = 0;
     virtual void update(float dt) = 0;
     virtual void render(IWindow& window) = 0;
-    /// Called when the SceneManager switches to another scene.
     virtual void exit() {}
   };
 }

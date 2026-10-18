@@ -13,7 +13,7 @@ namespace rtype::engine {
   void DebugOverlay::init() {
     const Config& config = _context.config;
     const std::string font = config.getString(SECTION, "font");
-    if (font.empty()) return;  // no [debug] font: overlay disabled
+    if (font.empty()) return; 
 
     _enabled = true;
     _template = config.getString(SECTION, "text", "FPS {fps}  {ms} ms  {sprites} sprites  {texts} texts");

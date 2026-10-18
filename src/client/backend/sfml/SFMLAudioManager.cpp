@@ -2,9 +2,7 @@
 #include "exception.hpp"
 
 namespace rtype::backend {
-  SFMLAudioManager::~SFMLAudioManager() {
-    // Sounds reference buffers: stop and destroy them first.
-    _voices.clear();
+  SFMLAudioManager::~SFMLAudioManager() {    _voices.clear();
     if (_music) _music->stop();
   }
 
@@ -16,7 +14,7 @@ namespace rtype::backend {
     const sf::SoundBuffer& buffer = getBuffer(filepath);
 
     update();
-    if (_voices.size() >= MAX_VOICES) _voices.pop_front();  // steal the oldest voice
+    if (_voices.size() >= MAX_VOICES) _voices.pop_front(); 
 
     sf::Sound& sound = _voices.emplace_back(buffer);
     sound.setVolume(volume);

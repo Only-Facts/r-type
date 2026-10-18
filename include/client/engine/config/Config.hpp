@@ -7,14 +7,7 @@
 #include <vector>
 
 namespace rtype::engine {
-  /// Minimal INI-style configuration, with no third-party dependency.
-  ///
-  ///   # comment
-  ///   [section]
-  ///   key = value
-  ///
-  /// Getters with a fallback return it when the key is missing, and throw
-  /// RtypeError when the value exists but is malformed (fail fast, with file:line).
+
   class Config {
   public:
     Config() = default;
@@ -32,12 +25,10 @@ namespace rtype::engine {
     bool getBool(const std::string& section, const std::string& key, bool fallback) const;
     Color getColor(const std::string& section, const std::string& key, const Color& fallback) const;
 
-    /// Whitespace-separated values: `speeds = 40 100 220`.
     std::vector<std::string> getList(const std::string& section, const std::string& key) const;
     std::vector<float> getFloatList(const std::string& section, const std::string& key) const;
     std::vector<int> getIntList(const std::string& section, const std::string& key) const;
 
-    /// Sections in file order (used by the asset manifest).
     const std::vector<std::string>& getSections() const { return _sectionOrder; }
     std::vector<std::string> getKeys(const std::string& section) const;
     const std::string& getOrigin() const { return _origin; }

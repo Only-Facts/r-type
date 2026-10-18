@@ -5,7 +5,6 @@
 #include "engine/ecs/ISystem.hpp"
 
 namespace rtype::engine {
-  /// Advances spritesheet frames. The RenderSystem reads `currentFrame`.
   class AnimationSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {
