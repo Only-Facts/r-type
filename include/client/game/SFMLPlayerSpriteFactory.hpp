@@ -14,6 +14,7 @@ namespace rtype::client {
     std::shared_ptr<engine::ISprite> createSprite(network::NetworkId playerId) override;
     engine::ShipTiltComponent createTilt(network::NetworkId playerId) const override;
     engine::Vector2f getSpriteScale() const override;
+    engine::Color getPlayerColor(network::NetworkId playerId) const override;
 
   private:
     int getSheetRowForPlayer(network::NetworkId playerId) const;

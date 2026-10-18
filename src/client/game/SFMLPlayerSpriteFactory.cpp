@@ -1,5 +1,6 @@
 #include "game/SFMLPlayerSpriteFactory.hpp"
 #include "gfx/SFMLSprite.hpp"
+#include <array>
 
 namespace rtype::client {
   namespace {
@@ -11,6 +12,14 @@ namespace rtype::client {
     constexpr int IDLE_COLUMN = 2;
     constexpr int MAX_TILT = 2;
     constexpr float SPRITE_SCALE = 3.0f;
+
+    constexpr std::array<engine::Color, ROW_COUNT> ROW_COLORS{{
+      {80, 230, 255, 255},
+      {255, 130, 255, 255},
+      {110, 255, 110, 255},
+      {255, 110, 100, 255},
+      {110, 150, 255, 255},
+    }};
   }
 
   SFMLPlayerSpriteFactory::SFMLPlayerSpriteFactory(engine::ITextureManager& textureManager)
@@ -37,6 +46,10 @@ namespace rtype::client {
 
   engine::Vector2f SFMLPlayerSpriteFactory::getSpriteScale() const {
     return engine::Vector2f{SPRITE_SCALE, SPRITE_SCALE};
+  }
+
+  engine::Color SFMLPlayerSpriteFactory::getPlayerColor(network::NetworkId playerId) const {
+    return ROW_COLORS[static_cast<std::size_t>(getSheetRowForPlayer(playerId))];
   }
 
   int SFMLPlayerSpriteFactory::getSheetRowForPlayer(network::NetworkId playerId) const {

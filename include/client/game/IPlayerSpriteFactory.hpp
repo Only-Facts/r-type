@@ -15,6 +15,7 @@ namespace rtype::client {
     virtual std::shared_ptr<engine::ISprite> createSprite(network::NetworkId playerId) = 0;
     virtual engine::ShipTiltComponent createTilt(network::NetworkId playerId) const = 0;
     virtual engine::Vector2f getSpriteScale() const = 0;
+    virtual engine::Color getPlayerColor(network::NetworkId playerId) const = 0;
   };
 }
 

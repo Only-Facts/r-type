@@ -7,8 +7,10 @@
 #include "ecs/Components.hpp"
 #include "gfx/ITextureManager.hpp"
 #include "gfx/IBackground.hpp"
+#include "gfx/SFMLTextFactory.hpp"
 #include "gfx/Starfield.hpp"
 #include "game/AnimationSystem.hpp"
+#include "game/Hud.hpp"
 #include "game/LifetimeSystem.hpp"
 #include "game/PlayerStatusSystem.hpp"
 #include "game/ProjectileSystem.hpp"
@@ -34,6 +36,8 @@ namespace rtype::engine {
         _enemySpriteFactory(_texMgr),
         _explosionSpriteFactory(_texMgr),
         _netMgr(_socket, _registry, _playerSpriteFactory, _missileSpriteFactory, _enemySpriteFactory, _explosionSpriteFactory),
+        _textFactory(HUD_FONT_PATH),
+        _hud(_textFactory, _playerSpriteFactory),
         _host(host),
         _port(port) {
       _systems.push_back(std::make_unique<client::ProjectileSystem>());
@@ -71,6 +75,8 @@ namespace rtype::engine {
           spr->sprite->setScale(transform.scale);
         }
       });
+
+      _hud.update(_registry);
     }
 
     void render(IWindow& window) override {
@@ -80,9 +86,13 @@ namespace rtype::engine {
         if (spr.sprite)
           window.draw(*spr.sprite);
       });
+
+      _hud.render(window);
     }
 
   private:
+    static constexpr const char* HUD_FONT_PATH = "assets/fonts/tuffy.ttf";
+
     Registry _registry;
     std::unique_ptr<IBackground> _background{std::make_unique<Starfield>()};
     std::vector<std::unique_ptr<ISystem>> _systems;
@@ -94,6 +104,8 @@ namespace rtype::engine {
     client::SFMLExplosionSpriteFactory _explosionSpriteFactory;
     network::SFMLUdpSocket _socket;
     client::ClientNetworkManager _netMgr;
+    SFMLTextFactory _textFactory;
+    client::Hud _hud;
 
     std::string _host{"127.0.0.1"};
     unsigned short _port{4242};

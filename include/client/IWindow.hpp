@@ -3,6 +3,7 @@
 
 #include "gfx/GfxTypes.hpp"
 #include "gfx/ISprite.hpp"
+#include "gfx/IText.hpp"
 #include "input/IInputManager.hpp"
 
 namespace rtype::engine {
@@ -18,6 +19,7 @@ namespace rtype::engine {
 
     virtual void clear(const Color& color = Color{0, 0, 0, 255}) = 0;
     virtual void draw(const ISprite& sprite) = 0;
+    virtual void draw(const IText& text) = 0;
     virtual void drawRectangle(const Vector2f& position, const Vector2f& size, const Color& color) = 0;
     virtual void display() = 0;
   };
