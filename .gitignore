@@ -3,5 +3,5 @@ compile_commands.json
 *.o
 .cache
 *.nts
-build/
+build*/
 vgcore*

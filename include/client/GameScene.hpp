@@ -14,6 +14,7 @@
 #include "game/ProjectileSystem.hpp"
 #include "game/SFMLEnemySpriteFactory.hpp"
 #include "game/SFMLExplosionSpriteFactory.hpp"
+#include "game/ShipTiltSystem.hpp"
 #include "game/SFMLMissileSpriteFactory.hpp"
 #include "game/SFMLPlayerSpriteFactory.hpp"
 #include "input/IInputManager.hpp"
@@ -39,6 +40,7 @@ namespace rtype::engine {
       _systems.push_back(std::make_unique<client::AnimationSystem>());
       _systems.push_back(std::make_unique<client::LifetimeSystem>());
       _systems.push_back(std::make_unique<client::PlayerStatusSystem>());
+      _systems.push_back(std::make_unique<client::ShipTiltSystem>());
     }
 
     ~GameScene() override = default;

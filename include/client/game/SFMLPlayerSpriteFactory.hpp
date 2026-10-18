@@ -12,6 +12,7 @@ namespace rtype::client {
     ~SFMLPlayerSpriteFactory() override = default;
 
     std::shared_ptr<engine::ISprite> createSprite(network::NetworkId playerId) override;
+    engine::ShipTiltComponent createTilt(network::NetworkId playerId) const override;
     engine::Vector2f getSpriteScale() const override;
 
   private:

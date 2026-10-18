@@ -39,6 +39,15 @@ namespace rtype::engine {
     float remaining{0.0f};
   };
 
+  struct ShipTiltComponent {
+    int frameWidth{0};
+    int frameHeight{0};
+    int row{0};
+    int neutralColumn{0};
+    int maxTilt{0};
+    float tilt{0.0f};
+  };
+
   struct AnimationComponent {
     int frameWidth{0};
     int frameHeight{0};

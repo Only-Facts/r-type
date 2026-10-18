@@ -164,6 +164,7 @@ namespace rtype::client {
       _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
       _registry.addComponent<engine::PlayerComponent>(entity, {0, game::PLAYER_START_LIVES, false});
+      _registry.addComponent<engine::ShipTiltComponent>(entity, _playerSpriteFactory.createTilt(netId));
 
       _networkToEcs[netId] = entity;
     }
@@ -252,6 +253,9 @@ namespace rtype::client {
 
       auto* transform = _registry.getComponent<engine::TransformComponent>(entity);
       if (transform) transform->targetPosition = {state.posX, state.posY};
+
+      auto* velocity = _registry.getComponent<engine::VelocityComponent>(entity);
+      if (velocity) velocity->velocity = {state.velX, state.velY};
 
       auto* player = _registry.getComponent<engine::PlayerComponent>(entity);
       if (player) *player = {state.score, state.lives, state.isInvincible != 0};

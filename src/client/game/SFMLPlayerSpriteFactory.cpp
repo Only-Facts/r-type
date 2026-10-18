@@ -9,6 +9,7 @@ namespace rtype::client {
     constexpr int COLUMN_COUNT = 5;
     constexpr int ROW_COUNT = 5;
     constexpr int IDLE_COLUMN = 2;
+    constexpr int MAX_TILT = 2;
     constexpr float SPRITE_SCALE = 3.0f;
   }
 
@@ -22,6 +23,16 @@ namespace rtype::client {
 
     sprite->setTextureRect(_sheet.getFrameRect(IDLE_COLUMN, getSheetRowForPlayer(playerId)));
     return sprite;
+  }
+
+  engine::ShipTiltComponent SFMLPlayerSpriteFactory::createTilt(network::NetworkId playerId) const {
+    engine::ShipTiltComponent tilt{};
+    tilt.frameWidth = FRAME_WIDTH;
+    tilt.frameHeight = FRAME_HEIGHT;
+    tilt.row = getSheetRowForPlayer(playerId);
+    tilt.neutralColumn = IDLE_COLUMN;
+    tilt.maxTilt = MAX_TILT;
+    return tilt;
   }
 
   engine::Vector2f SFMLPlayerSpriteFactory::getSpriteScale() const {
