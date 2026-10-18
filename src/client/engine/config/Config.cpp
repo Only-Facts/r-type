@@ -4,6 +4,7 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
 namespace rtype::engine {
   namespace {
