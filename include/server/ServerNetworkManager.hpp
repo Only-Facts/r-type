@@ -5,6 +5,7 @@
 #include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
 #include <unordered_map>
+#include <vector>
 
 namespace rtype::server {
   struct ConnectedClient {
@@ -14,6 +15,7 @@ namespace rtype::server {
     float posY{300.0f};
     float velX{0.0f};
     float velY{0.0f};
+    float idleTime{0.0f};
   };
 
   class ServerNetworkManager {
@@ -22,35 +24,47 @@ namespace rtype::server {
 
     void update(float dt) {
       processIncomingPackets();
+      removeTimedOutClients(dt);
       updatePhysics(dt);
       broadcastGameState();
     }
 
   private:
+    static constexpr float CLIENT_TIMEOUT = 3.0f;
+
     void processIncomingPackets() {
       network::PacketData data;
       network::Endpoint sender;
 
       while (_socket.receive(data, sender)) {
-        if (data.size() < sizeof(network::PacketHeader)) continue;
-
-        network::PacketStreamReader reader(data);
-        network::PacketHeader header{};
-        reader >> header;
-
-        if (header.magic != network::PROTOCOL_MAGIC) continue;
-
-        switch (header.type) {
-          case network::PacketType::ConnectReq: handleConnect(sender); break;
-          case network::PacketType::PlayerInput: handleInput(reader); break;
-          default: break;
+        try {
+          handlePacket(data, sender);
+        } catch (const RtypeError&) {
+          continue; // paquet malformé : on l'ignore, le serveur continue
         }
+      }
+    }
+
+    void handlePacket(const network::PacketData& data, const network::Endpoint& sender) {
+      if (data.size() < sizeof(network::PacketHeader)) return;
+
+      network::PacketStreamReader reader(data);
+      network::PacketHeader header{};
+      reader >> header;
+
+      if (header.magic != network::PROTOCOL_MAGIC) return;
+
+      switch (header.type) {
+        case network::PacketType::ConnectReq: handleConnect(sender); break;
+        case network::PacketType::PlayerInput: handleInput(reader); break;
+        case network::PacketType::Disconnect: handleDisconnect(reader); break;
+        default: break;
       }
     }
 
     void handleConnect(const network::Endpoint& sender) {
       network::NetworkId netId = _nextNetId++;
-      ConnectedClient client{netId, sender, 200.0f + (netId * 50.0f), 300.0f, 0.0f, 0.0f};
+      ConnectedClient client{netId, sender, 200.0f + (netId * 50.0f), 300.0f, 0.0f, 0.0f, 0.0f};
       _clients[netId] = client;
 
       {
@@ -83,6 +97,7 @@ namespace rtype::server {
 
       auto it = _clients.find(netId);
       if (it != _clients.end()) {
+        it->second.idleTime = 0.0f; // le client est vivant
         float speed = 300.0f;
         it->second.velX = 0.0f;
         it->second.velY = 0.0f;
@@ -91,6 +106,31 @@ namespace rtype::server {
         if (left) it->second.velX -= speed;
         if (right) it->second.velX += speed;
       }
+    }
+
+    void handleDisconnect(network::PacketStreamReader& reader) {
+      network::NetworkId netId;
+      reader >> netId;
+      removeClient(netId);
+    }
+
+    void removeClient(network::NetworkId netId) {
+      if (_clients.erase(netId) == 0) return;
+
+      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::DestroyEntity, _outgoingSeq++, sizeof(netId)};
+      network::PacketStreamWriter writer;
+      writer << header << netId;
+      for (const auto& [id, other] : _clients)
+        _socket.send(writer.getBuffer(), other.endpoint);
+    }
+
+    void removeTimedOutClients(float dt) {
+      std::vector<network::NetworkId> dead;
+      for (auto& [id, client] : _clients) {
+        client.idleTime += dt;
+        if (client.idleTime > CLIENT_TIMEOUT) dead.push_back(id);
+      }
+      for (auto id : dead) removeClient(id);
     }
 
     void updatePhysics(float dt) {

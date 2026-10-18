@@ -1,22 +1,35 @@
 #ifndef CLIENTNETWORKMANAGER_HPP
 #define CLIENTNETWORKMANAGER_HPP
 
+#include "engine/ecs/Components.hpp"
+#include "engine/ecs/Registry.hpp"
 #include "network/INetworkSocket.hpp"
-#include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
-#include "ecs/Registry.hpp"
-#include "ecs/Components.hpp"
-#include "gfx/SFMLSprite.hpp"
-#include "gfx/ITextureManager.hpp"
+#include "network/Protocol.hpp"
+#include <functional>
 #include <unordered_map>
+#include <utility>
+
+// Changes compared to the previous version (protocol untouched):
+//  - no more dependency on the texture manager: the network layer does not render.
+//    It creates the entity (Transform, Velocity, NetworkId) and notifies the game
+//    through the spawn callback, which decides how the entity looks.
+//  - position smoothing moved to engine::InterpolationSystem; this class only
+//    writes TransformComponent::targetPosition.
+//  - a destroy callback lets the game react when an entity leaves (HUD, sound).
 
 namespace rtype::client {
   class ClientNetworkManager {
   public:
-    ClientNetworkManager(network::INetworkSocket& socket,
-                         engine::Registry& registry,
-                         engine::ITextureManager& texMgr)
-      : _socket(socket), _registry(registry), _texMgr(texMgr) {}
+    using SpawnCallback = std::function<void(engine::Entity, network::NetworkId, bool isLocal)>;
+    using DestroyCallback = std::function<void(engine::Entity, network::NetworkId)>;
+
+    ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
+      : _socket(socket), _registry(registry) {}
+
+    void setOnEntitySpawned(SpawnCallback callback) { _onSpawn = std::move(callback); }
+    /// Called right before the entity is destroyed (player left, crashed, died...).
+    void setOnEntityDestroyed(DestroyCallback callback) { _onDestroy = std::move(callback); }
 
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
@@ -30,16 +43,8 @@ namespace rtype::client {
       _isConnected = false;
     }
 
-    void update(float dt) {
+    void update([[maybe_unused]] float dt) {
       processIncomingPackets();
-      if (!_isConnected) return;
-
-      _registry.view<engine::TransformComponent>([dt](engine::Entity, engine::TransformComponent& transform) {
-        float lerpFactor = 15.0f * dt;
-        if (lerpFactor > 1.0f) lerpFactor = 1.0f;
-        transform.position.x += (transform.targetPosition.x - transform.position.x) * lerpFactor;
-        transform.position.y += (transform.targetPosition.y - transform.position.y) * lerpFactor;
-      });
     }
 
     void sendInputs(bool up, bool down, bool left, bool right) {
@@ -61,6 +66,18 @@ namespace rtype::client {
       packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
 
       _socket.send(packet, _serverEndpoint);
+    }
+
+    void disconnect() {
+      if (!_isConnected) return;
+
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++, sizeof(_localNetId)
+      };
+      network::PacketStreamWriter writer;
+      writer << header << _localNetId;
+      _socket.send(writer.getBuffer(), _serverEndpoint);
+      _isConnected = false;
     }
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
@@ -121,21 +138,19 @@ namespace rtype::client {
       if (_networkToEcs.find(netId) != _networkToEcs.end()) return;
 
       auto entity = _registry.createEntity();
-      auto tex = _texMgr.loadTexture("assets/player.png");
-      auto sprite = std::make_shared<engine::SFMLSprite>(tex);
-
       bool isLocal = (netId == _localNetId);
       _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
-      _registry.addComponent<engine::SpriteComponent>(entity, {sprite});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
 
       _networkToEcs[netId] = entity;
+      if (_onSpawn) _onSpawn(entity, netId, isLocal);
     }
 
     void destroyRemotePlayer(network::NetworkId netId) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
+        if (_onDestroy) _onDestroy(it->second, netId);
         _registry.destroyEntity(it->second);
         _networkToEcs.erase(it);
       }
@@ -154,7 +169,8 @@ namespace rtype::client {
 
     network::INetworkSocket& _socket;
     engine::Registry& _registry;
-    engine::ITextureManager& _texMgr;
+    SpawnCallback _onSpawn;
+    DestroyCallback _onDestroy;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, engine::Entity> _networkToEcs;
 
