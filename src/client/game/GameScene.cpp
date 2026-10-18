@@ -13,6 +13,7 @@
 #include "exception.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
+#include <iostream>
 
 namespace rtype::game {
   namespace {
@@ -21,11 +22,13 @@ namespace rtype::game {
     constexpr const char* ACTION_DOWN = "move_down";
     constexpr const char* ACTION_LEFT = "move_left";
     constexpr const char* ACTION_RIGHT = "move_right";
+    constexpr const char* ACTION_SHOOT = "shoot";
 
     constexpr const char* SECTION_GAME = "game";
     constexpr const char* SECTION_NETWORK = "network";
     constexpr const char* SECTION_HUD = "hud";
     constexpr const char* SECTION_STARFIELD = "starfield";
+    constexpr const char* SECTION_ENTITY_TYPES = "entity_types";
 
     unsigned short readPort(const engine::Config& config) {
       const int port = config.getInt(SECTION_NETWORK, "port", 4242);
@@ -50,6 +53,19 @@ namespace rtype::game {
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
+    _catalog.load(context.config, SECTION_ENTITY_TYPES);
+    validateCatalog();
+  }
+
+  void GameScene::validateCatalog() const {
+    // Fail at startup rather than when the first enemy shows up.
+    for (int id = 0; id < 256; ++id) {
+      const EntityProfile* profile = _catalog.find(static_cast<network::ext::EntityType>(id));
+      if (!profile) continue;
+      _context.resources.get(profile->asset, engine::AssetType::Texture);
+      if (!profile->spawnSound.empty()) _context.resources.get(profile->spawnSound, engine::AssetType::Sound);
+      if (!profile->destroySound.empty()) _context.resources.get(profile->destroySound, engine::AssetType::Sound);
+    }
   }
 
   GameScene::~GameScene() {
@@ -73,11 +89,12 @@ namespace rtype::game {
     const std::string music = _context.config.getString(SECTION_GAME, "music");
     if (!music.empty()) _context.audio.playMusic(music);
 
-    _network.setOnEntitySpawned([this](engine::Entity entity, network::NetworkId netId, bool isLocal) {
-      onPlayerSpawned(entity, netId, isLocal);
-    });
-    _network.setOnEntityDestroyed([this](engine::Entity, network::NetworkId netId) {
-      onPlayerDestroyed(netId);
+    _network.setOnEntitySpawned(
+      [this](engine::Entity entity, network::NetworkId netId, network::ext::EntityType type, bool isLocal) {
+        onEntitySpawned(entity, netId, type, isLocal);
+      });
+    _network.setOnEntityDestroyed([this](engine::Entity, network::NetworkId netId, network::ext::EntityType type) {
+      onEntityDestroyed(netId, type);
     });
     _network.connectToServer(_host, _port);
   }
@@ -85,15 +102,14 @@ namespace rtype::game {
   void GameScene::onUpdate(float dt) {
     const engine::ActionMap& actions = _context.actions;
     _network.sendInputs(actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
-                        actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT));
+                        actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT),
+                        actions.isActive(ACTION_SHOOT));
     _network.update(dt);
     updateConnectionStatus(dt);
   }
 
   void GameScene::updateConnectionStatus(float dt) {
-    std::size_t players = 0;
-    _registry.view<engine::NetworkIdComponent>([&players](engine::Entity, engine::NetworkIdComponent&) { ++players; });
-    _hud.setPlayerCount(players, static_cast<std::size_t>(_maxPlayers));
+    _hud.setPlayerCount(_players.size(), static_cast<std::size_t>(_maxPlayers));
 
     const bool connected = _network.isConnected();
     if (connected && !_wasConnected) {
@@ -111,7 +127,44 @@ namespace rtype::game {
     _wasConnected = connected;
   }
 
+  void GameScene::onEntitySpawned(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
+                                  bool isLocal) {
+    if (type == network::ext::ENTITY_PLAYER) {
+      onPlayerSpawned(entity, netId, isLocal);
+      return;
+    }
+
+    const EntityProfile* profile = _catalog.find(type);
+    if (!profile) {
+      // Unknown type: keep the entity (the server owns it) but do not draw it.
+      if (std::find(_warnedTypes.begin(), _warnedTypes.end(), type) == _warnedTypes.end()) {
+        _warnedTypes.push_back(type);
+        std::cerr << "[warning] entity type " << static_cast<int>(type) << " has no [entity_types] entry\n";
+      }
+      return;
+    }
+
+    _factory.attachSprite(entity, profile->asset, profile->zIndex);
+    if (auto* transform = _registry.getComponent<engine::TransformComponent>(entity))
+      transform->scale = {profile->scale, profile->scale};
+    if (profile->interpolationSpeed > 0.0f) {
+      engine::InterpolationComponent interpolation;
+      interpolation.speed = profile->interpolationSpeed;
+      _registry.addComponent(entity, interpolation);
+    }
+    playSoundId(profile->spawnSound);
+  }
+
+  void GameScene::onEntityDestroyed(network::NetworkId netId, network::ext::EntityType type) {
+    if (type == network::ext::ENTITY_PLAYER) {
+      onPlayerDestroyed(netId);
+      return;
+    }
+    if (const EntityProfile* profile = _catalog.find(type)) playSoundId(profile->destroySound);
+  }
+
   void GameScene::onPlayerSpawned(engine::Entity entity, network::NetworkId netId, bool isLocal) {
+    _players.insert(netId);
     _factory.attachSprite(entity, playerAssetFor(netId), _playerZ);
 
     engine::InterpolationComponent interpolation;
@@ -123,6 +176,7 @@ namespace rtype::game {
   }
 
   void GameScene::onPlayerDestroyed(network::NetworkId netId) {
+    _players.erase(netId);
     playSound("leave_sound");
     _hud.notify("left_text", {{"player", std::to_string(playerNumber(netId))}});
   }
@@ -139,7 +193,10 @@ namespace rtype::game {
   }
 
   void GameScene::playSound(const std::string& configKey) {
-    const std::string sound = _context.config.getString(SECTION_GAME, configKey);
-    if (!sound.empty()) _context.audio.play(sound);
+    playSoundId(_context.config.getString(SECTION_GAME, configKey));
+  }
+
+  void GameScene::playSoundId(const std::string& soundId) {
+    if (!soundId.empty()) _context.audio.play(soundId);
   }
 }

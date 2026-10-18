@@ -26,6 +26,8 @@ namespace rtype::game {
       float outlineThickness{2.0f};
       float margin{24.0f};
       float notificationDuration{3.0f};
+      float lineSpacing{1.8f};          ///< Notification line height, in text sizes.
+      float notificationTop{2.0f};      ///< First notification, in lines below the top margin.
       std::unordered_map<std::string, std::string> templates;
     };
 

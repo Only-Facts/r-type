@@ -32,9 +32,9 @@ namespace rtype::engine {
     text.fontId = font;
     text.characterSize = static_cast<unsigned int>(std::max(1, config.getInt(SECTION, "text_size", 12)));
     text.color = config.getColor(SECTION, "color", Color{120, 255, 120, 255});
-    text.outlineThickness = 2.0f;
+    text.outlineThickness = config.getFloat(SECTION, "outline_thickness", 2.0f);
     text.origin = {0.0f, 1.0f};
-    text.zIndex = 1000;
+    text.zIndex = config.getInt(SECTION, "z_index", 1000);
     text.visible = _context.debug.overlayVisible;
     _registry.addComponent(_entity, text);
   }

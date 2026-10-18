@@ -27,6 +27,8 @@ namespace rtype::game {
     s.outlineThickness = config.getFloat(section, "outline_thickness", s.outlineThickness);
     s.margin = config.getFloat(section, "margin", s.margin);
     s.notificationDuration = config.getFloat(section, "notification_duration", s.notificationDuration);
+    s.lineSpacing = config.getFloat(section, "line_spacing", s.lineSpacing);
+    s.notificationTop = config.getFloat(section, "notification_top", s.notificationTop);
 
     if (size <= 0) throw RtypeError("[" + section + "] text_size must be > 0");
     if (s.scale <= 0.0f) throw RtypeError("[" + section + "] scale must be > 0");
@@ -65,8 +67,8 @@ namespace rtype::game {
     }), _notifications.end());
 
     const unsigned int size = scaled(_settings.textSize);
-    const float lineHeight = static_cast<float>(size) * 1.8f;
-    const float top = _settings.margin + lineHeight * 2.0f;
+    const float lineHeight = static_cast<float>(size) * _settings.lineSpacing;
+    const float top = _settings.margin + lineHeight * _settings.notificationTop;
 
     // Newest on top, older ones pushed down.
     for (std::size_t i = 0; i < _notifications.size(); ++i)

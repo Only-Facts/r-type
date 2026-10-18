@@ -29,7 +29,8 @@ namespace rtype::game {
     : AScene(context),
       _font(context.config.getString(SECTION, "font", "font_hud")),
       _startAction(context.config.getString(SECTION, "start_action", "start")),
-      _nextScene(context.config.getString(SECTION, "next_scene", "game")) {}
+      _nextScene(context.config.getString(SECTION, "next_scene", "game")),
+      _outlineThickness(context.config.getFloat(SECTION, "outline_thickness", 2.0f)) {}
 
   void TitleScene::onInit() {
     const engine::Config& cfg = _context.config;
@@ -44,16 +45,23 @@ namespace rtype::game {
     const engine::Color dim = cfg.getColor(SECTION, "dim_color", engine::Color{170, 170, 190, 255});
 
     // Title block
+    // Layout, as fractions of the window height (positions) and of the text size (spacings).
+    const float titleY = cfg.getFloat(SECTION, "title_y", 0.22f);
+    const float promptY = cfg.getFloat(SECTION, "prompt_y", 0.45f);
+    const float controlsY = cfg.getFloat(SECTION, "controls_y", 0.58f);
+    const float subtitleSpacing = cfg.getFloat(SECTION, "subtitle_spacing", 1.3f);
+    const float lineSpacing = cfg.getFloat(SECTION, "line_spacing", 2.0f);
+
     const unsigned int titleSize = readSize(cfg, "title_size", 72);
-    addText(cfg.getString(SECTION, "title_text", "R-TYPE"), 0.22f, 0.0f, titleSize,
+    addText(cfg.getString(SECTION, "title_text", "R-TYPE"), titleY, 0.0f, titleSize,
             cfg.getColor(SECTION, "title_color", white));
-    addText(cfg.getString(SECTION, "subtitle_text", ""), 0.22f, static_cast<float>(titleSize) * 1.3f,
+    addText(cfg.getString(SECTION, "subtitle_text", ""), titleY, static_cast<float>(titleSize) * subtitleSpacing,
             readSize(cfg, "subtitle_size", 14), dim);
 
     // Blinking prompt, with the real keys bound to the start action
     const engine::Entity prompt = addText(
       engine::formatTemplate(cfg.getString(SECTION, "prompt_text", "Press {keys} to start"), {{"keys", keysFor(_startAction)}}),
-      0.45f, 0.0f, readSize(cfg, "prompt_size", 20), accent);
+      promptY, 0.0f, readSize(cfg, "prompt_size", 20), accent);
     const float blink = cfg.getFloat(SECTION, "prompt_blink_period", 1.2f);
     if (blink > 0.0f) {
       engine::BlinkComponent blinkComponent;
@@ -63,23 +71,23 @@ namespace rtype::game {
 
     // Controls, generated from the [input] bindings
     const unsigned int controlSize = readSize(cfg, "controls_size", 14);
-    const float lineHeight = static_cast<float>(controlSize) * 2.0f;
+    const float lineHeight = static_cast<float>(controlSize) * lineSpacing;
     float y = 0.0f;
-    addText(cfg.getString(SECTION, "controls_title", "Controls"), 0.58f, y, controlSize, accent);
+    addText(cfg.getString(SECTION, "controls_title", "Controls"), controlsY, y, controlSize, accent);
     for (const auto& action : cfg.getList(SECTION, "controls")) {
       if (!_context.actions.has(action)) continue;
       y += lineHeight;
       const std::string label = cfg.getString(SECTION, "label_" + action, action);
       addText(engine::formatTemplate(cfg.getString(SECTION, "control_line", "{label}  {keys}"),
                                      {{"label", label}, {"keys", keysFor(action)}}),
-              0.58f, y, controlSize, white);
+              controlsY, y, controlSize, white);
     }
 
     // Server address, bottom of the screen
     addText(engine::formatTemplate(cfg.getString(SECTION, "server_text", "Server {host}:{port}"),
                                    {{"host", cfg.getString("network", "host", "127.0.0.1")},
                                     {"port", cfg.getString("network", "port", "4242")}}),
-            0.94f, 0.0f, controlSize, dim);
+            cfg.getFloat(SECTION, "server_y", 0.94f), 0.0f, controlSize, dim);
 
     const std::string music = cfg.getString(SECTION, "music");
     if (!music.empty()) _context.audio.playMusic(music);
@@ -108,7 +116,7 @@ namespace rtype::game {
     component.text = text;
     component.characterSize = size;
     component.color = color;
-    component.outlineThickness = 2.0f;
+    component.outlineThickness = _outlineThickness;
     component.origin = {0.5f, 0.0f};
     _registry.addComponent(entity, component);
     return entity;

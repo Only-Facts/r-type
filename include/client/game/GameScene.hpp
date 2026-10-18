@@ -3,17 +3,20 @@
 
 #include "engine/core/EngineContext.hpp"
 #include "engine/scene/AScene.hpp"
+#include "game/EntityCatalog.hpp"
 #include "game/Hud.hpp"
 #include "network/ClientNetworkManager.hpp"
 #include "network/INetworkSocket.hpp"
 #include <memory>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 namespace rtype::game {
   /// The R-Type in-game scene. It only talks to engine interfaces: it asks for
   /// assets and sounds by id, reads actions by name, gets its socket from the
-  /// backend, and reads its tuning from the [game], [network], [hud] and
-  /// [starfield] config sections.
+  /// backend, and reads its tuning from the [game], [network], [hud],
+  /// [starfield] and [entity_types] config sections.
   class GameScene : public engine::AScene {
   public:
     explicit GameScene(engine::EngineContext& context);
@@ -24,17 +27,24 @@ namespace rtype::game {
     void onUpdate(float dt) override;
 
   private:
+    void onEntitySpawned(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type, bool isLocal);
+    void onEntityDestroyed(network::NetworkId netId, network::ext::EntityType type);
     void onPlayerSpawned(engine::Entity entity, network::NetworkId netId, bool isLocal);
     void onPlayerDestroyed(network::NetworkId netId);
+    void validateCatalog() const;
     void updateConnectionStatus(float dt);
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
     void playSound(const std::string& configKey);
+    void playSoundId(const std::string& soundId);
 
     std::unique_ptr<network::INetworkSocket> _socket;
     client::ClientNetworkManager _network;
     Hud _hud;
+    EntityCatalog _catalog;
+    std::vector<network::ext::EntityType> _warnedTypes;
+    std::unordered_set<network::NetworkId> _players;
 
     std::string _host;
     unsigned short _port;

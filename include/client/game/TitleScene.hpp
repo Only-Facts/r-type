@@ -26,6 +26,7 @@ namespace rtype::game {
     std::string _font;
     std::string _startAction;
     std::string _nextScene;
+    float _outlineThickness;
   };
 }
 
