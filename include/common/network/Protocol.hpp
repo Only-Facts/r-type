@@ -9,11 +9,13 @@ namespace rtype::network {
   enum class PacketType : std::uint8_t {
     ConnectReq = 0x01,
     ConnectAck = 0x02,
+    Disconnect = 0x03,
     SpawnPlayer = 0x10,
     DestroyEntity = 0x11,
     PlayerInput = 0x20,
     GameStateSync = 0x30,
     Ping = 0xE0,
+    Disconnect = 0x03,
     Pong = 0xE1
   };
 
