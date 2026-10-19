@@ -24,6 +24,8 @@ namespace rtype::client {
     using DestroyCallback = std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType)>;
     using HealthCallback =
       std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, int, int, int)>;
+    using AugmentCallback = std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType,
+                                               network::ext::AugmentId, int, float)>;
 
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
@@ -33,6 +35,7 @@ namespace rtype::client {
     void setOnEntityDestroyed(DestroyCallback callback) { _onDestroy = std::move(callback); }
 
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
+    void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
 
     void connectToServer(const std::string& host, unsigned short port,
                          std::optional<std::uint8_t> difficulty = std::nullopt) {
@@ -142,6 +145,17 @@ namespace rtype::client {
         updateHealth(netId, health, maxHealth);
         return;
       }
+      if (header.type == network::ext::AUGMENT_UPDATE) {
+        network::NetworkId netId;
+        network::ext::AugmentId augment;
+        std::uint8_t level;
+        float remaining;
+        reader >> netId >> augment >> level >> remaining;
+        auto it = _networkToEcs.find(netId);
+        if (it != _networkToEcs.end() && _onAugment)
+          _onAugment(it->second.entity, netId, it->second.type, augment, level, remaining);
+        return;
+      }
 
       switch (header.type) {
         case network::PacketType::ConnectAck: {
@@ -234,6 +248,7 @@ namespace rtype::client {
     SpawnCallback _onSpawn;
     DestroyCallback _onDestroy;
     HealthCallback _onHealth;
+    AugmentCallback _onAugment;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
     std::vector<network::EntityStateData> _snapshot;

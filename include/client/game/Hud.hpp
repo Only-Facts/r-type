@@ -6,6 +6,8 @@
 #include "engine/ecs/EntityFactory.hpp"
 #include "engine/ecs/Registry.hpp"
 #include "engine/gfx/GfxTypes.hpp"
+#include <cstdint>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +39,7 @@ namespace rtype::game {
       engine::Color healthHigh{90, 220, 120, 255};
       engine::Color healthLow{230, 70, 70, 255};
       float lowThreshold{0.3f};        
+      float augmentsTop{2.4f};
       std::unordered_map<std::string, std::string> templates;
     };
 
@@ -51,6 +54,12 @@ namespace rtype::game {
     void notify(const std::string& templateKey, const Params& params);
 
     void setHealth(int current, int max);
+
+    void setAugment(std::uint8_t id, const std::string& label, const engine::Color& color, int level, float remaining);
+    void removeAugment(std::uint8_t id);
+    void clearAugments();
+    bool hasAugment(std::uint8_t id) const { return _augments.find(id) != _augments.end(); }
+    void update(float dt);
 
     void showCenterMessage(const std::string& templateKey, const std::string& hintKey, const Params& params,
                            const engine::Color& color);
@@ -74,6 +83,17 @@ namespace rtype::game {
     engine::Entity _center{0};
     engine::Entity _centerHint{0};
     std::vector<engine::Entity> _notifications;
+
+    struct AugmentSlot {
+      engine::Entity entity{0};
+      std::string label;
+      int level{1};
+      float remaining{0.0f};
+      int shownSeconds{-1};
+    };
+    void layoutAugments();
+    void refreshAugment(AugmentSlot& slot);
+    std::map<std::uint8_t, AugmentSlot> _augments;
   };
 }
 

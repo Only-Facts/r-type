@@ -3,6 +3,7 @@
 
 #include "engine/core/EngineContext.hpp"
 #include "engine/scene/AScene.hpp"
+#include "game/AugmentCatalog.hpp"
 #include "game/Difficulty.hpp"
 #include "game/EntityCatalog.hpp"
 #include "game/Hud.hpp"
@@ -33,6 +34,9 @@ namespace rtype::game {
                          int health, int maxHealth, int previous);
     void onLocalPlayerDestroyed();
     void flash(engine::Entity entity);
+    void onAugmentChanged(engine::Entity entity, network::NetworkId netId, network::ext::AugmentId augment, int level,
+                          float remaining);
+    void spawnFloatingText(engine::Entity anchor, const std::string& text, const engine::Color& color);
     void validateCatalog() const;
     void updateConnectionStatus(float dt);
 
@@ -46,6 +50,21 @@ namespace rtype::game {
     Hud _hud;
     EntityCatalog _catalog;
     Difficulty _difficulty;
+    AugmentCatalog _augments;
+
+    struct FloatingTextStyle {
+      std::string font;
+      unsigned int size{14};
+      float riseSpeed{40.0f};
+      float duration{1.0f};
+      float fadePortion{0.5f};
+      float offsetX{16.0f};
+      float offsetY{-12.0f};
+      float outline{2.0f};
+      int zIndex{200};
+      engine::Color healColor{120, 255, 140, 255};
+    };
+    FloatingTextStyle _floating;
     std::vector<network::ext::EntityType> _warnedTypes;
     std::unordered_set<network::NetworkId> _players;
     std::unordered_set<network::NetworkId> _deadPlayers;

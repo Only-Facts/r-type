@@ -18,6 +18,9 @@ namespace rtype::game {
       {"destroyed_hint_text", "Press {keys} to quit"},
       {"player_destroyed_text", "Player {player} was destroyed"},
       {"difficulty_hud_text", "{difficulty}"},
+      {"augment_text", "{label}  {time}s"},
+      {"augment_stacked_text", "{label} x{level}  {time}s"},
+      {"augment_permanent_text", "{label} x{level}"},
     };
 
     engine::Vector2f readPair(const engine::Config& config, const std::string& section, const std::string& key,
@@ -50,6 +53,7 @@ namespace rtype::game {
     s.healthHigh = config.getColor(section, "health_color_high", s.healthHigh);
     s.healthLow = config.getColor(section, "health_color_low", s.healthLow);
     s.lowThreshold = config.getFloat(section, "health_low_threshold", s.lowThreshold);
+    s.augmentsTop = config.getFloat(section, "augments_top", s.augmentsTop);
 
     if (size <= 0) throw RtypeError("[" + section + "] text_size must be > 0");
     if (s.scale <= 0.0f) throw RtypeError("[" + section + "] scale must be > 0");
@@ -194,5 +198,68 @@ namespace rtype::game {
 
   unsigned int Hud::scaled(unsigned int size) const {
     return static_cast<unsigned int>(std::lround(static_cast<float>(size) * _settings.scale));
+  }
+
+  void Hud::setAugment(std::uint8_t id, const std::string& label, const engine::Color& color, int level,
+                       float remaining) {
+    auto it = _augments.find(id);
+    if (it == _augments.end()) {
+      AugmentSlot slot;
+      slot.entity = createText({0.0f, 0.0f}, {_settings.margin, 0.0f}, {0.0f, 0.0f}, scaled(_settings.textSize));
+      it = _augments.emplace(id, slot).first;
+      layoutAugments();
+    }
+    AugmentSlot& slot = it->second;
+    slot.label = label;
+    slot.level = level;
+    slot.remaining = remaining;
+    slot.shownSeconds = -1;
+    if (auto* text = _registry.getComponent<engine::TextComponent>(slot.entity)) text->color = color;
+    refreshAugment(slot);
+  }
+
+  void Hud::removeAugment(std::uint8_t id) {
+    auto it = _augments.find(id);
+    if (it == _augments.end()) return;
+    _registry.destroyEntity(it->second.entity);
+    _augments.erase(it);
+    layoutAugments();
+  }
+
+  void Hud::clearAugments() {
+    for (auto& [id, slot] : _augments) _registry.destroyEntity(slot.entity);
+    _augments.clear();
+  }
+
+  void Hud::update(float dt) {
+    for (auto& [id, slot] : _augments) {
+      if (slot.remaining < 0.0f) continue;
+      slot.remaining = std::max(0.0f, slot.remaining - dt);
+      refreshAugment(slot);
+    }
+  }
+
+  void Hud::layoutAugments() {
+    const float lineHeight = static_cast<float>(scaled(_settings.textSize)) * _settings.lineSpacing;
+    float index = 0.0f;
+    for (auto& [id, slot] : _augments) {
+      if (auto* anchor = _registry.getComponent<engine::ScreenAnchorComponent>(slot.entity))
+        anchor->offset.y = _settings.margin + lineHeight * (_settings.augmentsTop + index);
+      index += 1.0f;
+    }
+  }
+
+  void Hud::refreshAugment(AugmentSlot& slot) {
+    const bool permanent = slot.remaining < 0.0f;
+    const int seconds = permanent ? -1 : static_cast<int>(std::ceil(slot.remaining));
+    if (seconds == slot.shownSeconds && !permanent) return;
+    slot.shownSeconds = seconds;
+    if (auto* text = _registry.getComponent<engine::TextComponent>(slot.entity)) {
+      const std::string& templ = getTemplate(permanent ? "augment_permanent_text"
+                                                       : slot.level > 1 ? "augment_stacked_text" : "augment_text");
+      text->text = engine::formatTemplate(templ, {{"label", slot.label},
+                                                  {"level", std::to_string(slot.level)},
+                                                  {"time", std::to_string(seconds)}});
+    }
   }
 }

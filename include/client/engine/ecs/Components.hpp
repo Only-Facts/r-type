@@ -64,6 +64,9 @@ namespace rtype::engine {
 
   struct LifetimeComponent {
     float remaining{1.0f};
+    float duration{0.0f};
+    bool fadeOut{false};
+    float fadePortion{1.0f};
   };
 
 
