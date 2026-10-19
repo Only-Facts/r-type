@@ -15,7 +15,6 @@ namespace rtype::engine {
     _keyMap[sf::Keyboard::Key::Space] = KeyCode::Space;
     _keyMap[sf::Keyboard::Key::Escape] = KeyCode::Escape;
     _keyMap[sf::Keyboard::Key::Enter] = KeyCode::Enter;
-    _keyMap[sf::Keyboard::Key::Tab] = KeyCode::Tab;
 
     _keyMap[sf::Keyboard::Key::Z] = KeyCode::KeyZ;
     _keyMap[sf::Keyboard::Key::Q] = KeyCode::KeyQ;
@@ -25,33 +24,17 @@ namespace rtype::engine {
 
   void SFMLInputManager::update() {
     _previousStates = _currentStates;
-    _textEntered.clear();
+    _currentStates.fill(false);
   }
 
   void SFMLInputManager::handleEvent(const sf::Event& event) {
-    if (const auto* pressed = event.getIf<sf::Event::KeyPressed>())
-      setKeyState(pressed->code, true);
-    else if (const auto* released = event.getIf<sf::Event::KeyReleased>())
-      setKeyState(released->code, false);
-    else if (const auto* text = event.getIf<sf::Event::TextEntered>())
-      appendTextEntered(text->unicode);
-    else if (event.is<sf::Event::FocusLost>())
-      _currentStates.fill(false);
-  }
-
-  void SFMLInputManager::appendTextEntered(char32_t character) {
-    const bool isPrintableAscii = character >= U' ' && character <= U'~';
-    if (isPrintableAscii || character == BACKSPACE_CHARACTER)
-      _textEntered.push_back(static_cast<char>(character));
-  }
-
-  const std::string& SFMLInputManager::getTextEntered() const {
-    return _textEntered;
-  }
-
-  void SFMLInputManager::setKeyState(sf::Keyboard::Key key, bool isPressed) {
-    auto it = _keyMap.find(key);
-    if (it != _keyMap.end()) _currentStates[static_cast<std::size_t>(it->second)] = isPressed;
+    if (event.is<sf::Event::KeyPressed>() || event.is<sf::Event::KeyReleased>()) {
+      auto key = event.getIf<sf::Event::KeyPressed>();
+      if (key != nullptr) {
+        auto it = _keyMap.find(key->code);
+        if (it != _keyMap.end()) _currentStates[static_cast<std::size_t>(it->second)] = (event.is<sf::Event::KeyPressed>());
+      }
+    }
   }
 
   bool SFMLInputManager::isKeyPressed(KeyCode key) const {

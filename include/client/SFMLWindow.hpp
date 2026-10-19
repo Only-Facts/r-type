@@ -14,12 +14,9 @@ namespace rtype::engine {
     void close() override;
     void pollEvents(IInputManager& inputManager) override;
     float getDeltaTime() override;
-    Vector2u getSize() const override;
 
     void clear(const Color& color = Color{0, 0, 0, 255}) override;
     void draw(const ISprite& sprite) override;
-    void draw(const IText& text) override;
-    void drawRectangle(const Vector2f& position, const Vector2f& size, const Color& color) override;
     void display() override;
 
   private:

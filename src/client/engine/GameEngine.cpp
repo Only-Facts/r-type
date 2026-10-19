@@ -21,8 +21,11 @@ namespace rtype::engine {
   }
 
   void GameEngine::update(float deltaTime) {
+    if (_inputManager->isKeyJustPressed(KeyCode::Escape)) {
+      _window->close();
+      return;
+    }
     _sceneManager.update(deltaTime);
-    if (_sceneManager.isQuitRequested()) _window->close();
   }
 
   void GameEngine::render() {

@@ -1,18 +1,15 @@
 #include "cli.hpp"
 #include "exception.hpp"
 #include "input/SFMLInputManager.hpp"
-#include "gfx/SFMLTextFactory.hpp"
 #include "gfx/SFMLTextureManager.hpp"
 #include "variables.hpp"
 #include "GameEngine.hpp"
 #include "GameScene.hpp"
-#include "MenuScene.hpp"
 #include "SFMLWindow.hpp"
 #include <memory>
 
 #define DEFAULT_WIDTH 1920
 #define DEFAULT_HEIGHT 1080
-#define FONT_PATH "assets/fonts/tuffy.ttf"
 
 std::size_t parse_arguments(int argc, const char *argv[], std::size_t* width, std::size_t* height) {
   (void)argc;
@@ -38,7 +35,6 @@ int main(int argc, const char *argv[]) {
   if (bits & (FAIL | ERROR | HELP)) [[ unlikely ]] return (bits & (FAIL | ERROR)) ? FAIL : SUCCESS;
 
   try {
-    rtype::engine::SFMLTextFactory textFactory(FONT_PATH);
     auto window = std::make_unique<rtype::engine::SFMLWindow>(width, height, "R-Type Client");
     auto inputManager = std::make_unique<rtype::engine::SFMLInputManager>();
     auto textureManager = std::make_unique<rtype::engine::SFMLTextureManager>();
@@ -47,21 +43,13 @@ int main(int argc, const char *argv[]) {
 
     rtype::engine::GameEngine engine(std::move(window), std::move(inputManager), std::move(textureManager));
 
-    auto& scenes = engine.getSceneManager();
-    auto& textureManagerRef = engine.getTextureManager();
-    auto& inputManagerRef = engine.getInputManager();
+    auto gameScene = std::make_shared<rtype::engine::GameScene>(
+      engine.getTextureManager(),
+      engine.getInputManager()
+    );
 
-    auto backToMenu = [&scenes]() { scenes.changeScene("menu"); };
-    auto quitGame = [&scenes]() { scenes.requestQuit(); };
-    auto startGame = [&]() {
-      scenes.addScene("game", std::make_shared<rtype::engine::GameScene>(
-        textureManagerRef, inputManagerRef, textFactory, backToMenu, quitGame));
-      scenes.changeScene("game");
-    };
-
-    scenes.addScene("menu", std::make_shared<rtype::engine::MenuScene>(
-      inputManagerRef, textFactory, startGame, quitGame));
-    scenes.changeScene("menu");
+    engine.getSceneManager().addScene("game", gameScene);
+    engine.getSceneManager().changeScene("game");
 
     engine.run();
 

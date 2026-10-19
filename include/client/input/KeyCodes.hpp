@@ -13,14 +13,11 @@ namespace rtype::engine {
     Space,
     Escape,
     Enter,
-    Tab,
     KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ,
     KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT,
     KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
     Count
   };
-
-  inline constexpr char BACKSPACE_CHARACTER = '\b';
 }
 
 #endif // !KEYCODES_HPP

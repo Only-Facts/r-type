@@ -41,7 +41,6 @@ if(NOT SFML_FOUND)
         GIT_TAG 3.1.0
     )
 
-  set(SFML_USE_SYSTEM_DEPS OFF CACHE BOOL "" FORCE)
   set(SFML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SFML_BUILD_DOC OFF CACHE BOOL "" FORCE)
   set(SFML_BUILD_TEST_SUITE OFF CACHE BOOL "" FORCE)
@@ -51,11 +50,7 @@ endif()
 
 # FLAGS
 
-if(MSVC)
-  add_compile_options(/W4)
-else()
-  add_compile_options(-Wall -Wextra -Werror -g)
-endif()
+add_compile_options(-Wall -Wextra -Werror -g)
 
 # SRC
 

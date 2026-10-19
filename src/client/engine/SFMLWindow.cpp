@@ -1,7 +1,6 @@
 #include "SFMLWindow.hpp"
 #include "input/SFMLInputManager.hpp"
 #include "gfx/SFMLSprite.hpp"
-#include "gfx/SFMLText.hpp"
 
 namespace rtype::engine {
   SFMLWindow::SFMLWindow(unsigned int width, unsigned int height, const std::string& title)
@@ -31,11 +30,6 @@ namespace rtype::engine {
     return _deltaTime;
   }
 
-  Vector2u SFMLWindow::getSize() const {
-    const sf::Vector2u size = _window.getSize();
-    return Vector2u{size.x, size.y};
-  }
-
   void SFMLWindow::clear(const Color& color) {
     _window.clear(sf::Color(color.r, color.g, color.b, color.a));
   }
@@ -43,18 +37,6 @@ namespace rtype::engine {
   void SFMLWindow::draw(const ISprite& sprite) {
     const auto* sfmlSprite = dynamic_cast<const SFMLSprite*>(&sprite);
     if (sfmlSprite && sfmlSprite->getNativeSprite()) _window.draw(*sfmlSprite->getNativeSprite());
-  }
-
-  void SFMLWindow::draw(const IText& text) {
-    const auto* sfmlText = dynamic_cast<const SFMLText*>(&text);
-    if (sfmlText) _window.draw(sfmlText->getNativeText());
-  }
-
-  void SFMLWindow::drawRectangle(const Vector2f& position, const Vector2f& size, const Color& color) {
-    sf::RectangleShape rectangle(sf::Vector2f(size.x, size.y));
-    rectangle.setPosition(sf::Vector2f(position.x, position.y));
-    rectangle.setFillColor(sf::Color(color.r, color.g, color.b, color.a));
-    _window.draw(rectangle);
   }
 
   void SFMLWindow::display() {
