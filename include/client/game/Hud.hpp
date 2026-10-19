@@ -47,6 +47,7 @@ namespace rtype::game {
     void create();
     void setStatus(const std::string& templateKey, const Params& params, const engine::Color& color);
     void setPlayerCount(std::size_t count, std::size_t max);
+    void setDifficulty(const std::string& label, const engine::Color& color);
     void notify(const std::string& templateKey, const Params& params);
 
     void setHealth(int current, int max);
@@ -66,6 +67,7 @@ namespace rtype::game {
     Settings _settings;
     engine::Entity _status{0};
     engine::Entity _players{0};
+    engine::Entity _difficulty{0};
     engine::Entity _barBack{0};
     engine::Entity _barFill{0};
     engine::Entity _healthText{0};

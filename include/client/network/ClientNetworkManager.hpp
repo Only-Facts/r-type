@@ -8,7 +8,9 @@
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
 #include "network/ProtocolExtension.hpp"
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -32,16 +34,20 @@ namespace rtype::client {
 
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
 
-    void connectToServer(const std::string& host, unsigned short port) {
+    void connectToServer(const std::string& host, unsigned short port,
+                         std::optional<std::uint8_t> difficulty = std::nullopt) {
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
 
-      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++, 0};
+      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++,
+                                   static_cast<std::uint16_t>(difficulty ? sizeof(std::uint8_t) : 0)};
       network::PacketStreamWriter writer;
       writer << header;
+      if (difficulty) writer << *difficulty;
       _socket.send(writer.getBuffer(), _serverEndpoint);
       _isConnected = false;
+      _serverDifficulty.reset();
     }
 
     void update([[maybe_unused]] float dt) {
@@ -83,6 +89,7 @@ namespace rtype::client {
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
+    [[nodiscard]] std::optional<std::uint8_t> getServerDifficulty() const { return _serverDifficulty; }
     [[nodiscard]] std::size_t getDroppedPacketCount() const { return _droppedPackets; }
 
   private:
@@ -139,6 +146,11 @@ namespace rtype::client {
       switch (header.type) {
         case network::PacketType::ConnectAck: {
           reader >> _localNetId;
+          if (reader.hasMoreData()) {
+            std::uint8_t difficulty = 0;
+            reader >> difficulty;
+            _serverDifficulty = difficulty;
+          }
           _isConnected = true;
           break;
         }
@@ -230,6 +242,7 @@ namespace rtype::client {
     std::uint32_t _outgoingSeq{1};
     std::uint32_t _lastSyncSeq{0};
     std::size_t _droppedPackets{0};
+    std::optional<std::uint8_t> _serverDifficulty;
     bool _isConnected{false};
   };
 }

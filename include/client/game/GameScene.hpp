@@ -3,6 +3,7 @@
 
 #include "engine/core/EngineContext.hpp"
 #include "engine/scene/AScene.hpp"
+#include "game/Difficulty.hpp"
 #include "game/EntityCatalog.hpp"
 #include "game/Hud.hpp"
 #include "network/ClientNetworkManager.hpp"
@@ -44,6 +45,7 @@ namespace rtype::game {
     client::ClientNetworkManager _network;
     Hud _hud;
     EntityCatalog _catalog;
+    Difficulty _difficulty;
     std::vector<network::ext::EntityType> _warnedTypes;
     std::unordered_set<network::NetworkId> _players;
     std::unordered_set<network::NetworkId> _deadPlayers;

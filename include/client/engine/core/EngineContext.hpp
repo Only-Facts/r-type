@@ -12,6 +12,7 @@ namespace rtype::engine {
   class IWindow;
   class ResourceManager;
   class SceneManager;
+  class Session;
 
   struct EngineContext {
     const Config& config;
@@ -24,6 +25,7 @@ namespace rtype::engine {
     IBackend& backend;
     const FrameStats& stats;
     DebugState& debug;
+    Session& session;
   };
 }
 

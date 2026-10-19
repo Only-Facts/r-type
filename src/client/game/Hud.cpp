@@ -17,6 +17,7 @@ namespace rtype::game {
       {"destroyed_text", "DESTROYED"},
       {"destroyed_hint_text", "Press {keys} to quit"},
       {"player_destroyed_text", "Player {player} was destroyed"},
+      {"difficulty_hud_text", "{difficulty}"},
     };
 
     engine::Vector2f readPair(const engine::Config& config, const std::string& section, const std::string& key,
@@ -68,6 +69,7 @@ namespace rtype::game {
     _players = createText({1.0f, 0.0f}, {-m, m}, {1.0f, 0.0f}, scaled(_settings.textSize));
 
     const float lineHeight = static_cast<float>(scaled(_settings.textSize)) * _settings.lineSpacing;
+    _difficulty = createText({1.0f, 0.0f}, {-m, m + lineHeight}, {1.0f, 0.0f}, scaled(_settings.textSize));
     const float barY = m + lineHeight * _settings.barTop;
     _barBack = createBar(barY, _settings.barBackColor, 90);
     _barFill = createBar(barY, _settings.healthHigh, 91);
@@ -124,6 +126,13 @@ namespace rtype::game {
   void Hud::setStatus(const std::string& templateKey, const Params& params, const engine::Color& color) {
     if (auto* text = _registry.getComponent<engine::TextComponent>(_status)) {
       text->text = engine::formatTemplate(getTemplate(templateKey), params);
+      text->color = color;
+    }
+  }
+
+  void Hud::setDifficulty(const std::string& label, const engine::Color& color) {
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_difficulty)) {
+      text->text = engine::formatTemplate(getTemplate("difficulty_hud_text"), {{"difficulty", label}});
       text->color = color;
     }
   }

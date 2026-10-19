@@ -6,6 +6,7 @@
 #include "engine/input/ActionMap.hpp"
 #include "engine/input/KeyCodes.hpp"
 #include "engine/platform/IWindow.hpp"
+#include "engine/resources/ResourceManager.hpp"
 #include "engine/scene/SceneManager.hpp"
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
@@ -30,7 +31,15 @@ namespace rtype::game {
       _font(context.config.getString(SECTION, "font", "font_hud")),
       _startAction(context.config.getString(SECTION, "start_action", "start")),
       _nextScene(context.config.getString(SECTION, "next_scene", "game")),
-      _outlineThickness(context.config.getFloat(SECTION, "outline_thickness", 2.0f)) {}
+      _outlineThickness(context.config.getFloat(SECTION, "outline_thickness", 2.0f)),
+      _prevAction(context.config.getString(SECTION, "difficulty_prev_action", "menu_prev")),
+      _nextAction(context.config.getString(SECTION, "difficulty_next_action", "menu_next")) {
+    _difficulty.load(context.config, "difficulty");
+    for (const char* key : {"start_sound", "difficulty_sound"}) {
+      const std::string sound = context.config.getString(SECTION, key);
+      if (!sound.empty()) context.resources.get(sound, engine::AssetType::Sound);
+    }
+  }
 
   void TitleScene::onInit() {
     const engine::Config& cfg = _context.config;
@@ -66,6 +75,15 @@ namespace rtype::game {
       _registry.addComponent(prompt, blinkComponent);
     }
 
+    const float difficultyY = cfg.getFloat(SECTION, "difficulty_y", 0.38f);
+    const unsigned int difficultySize = readSize(cfg, "difficulty_size", 18);
+    _difficultyText = addText("", difficultyY, 0.0f, difficultySize, white);
+    addText(engine::formatTemplate(cfg.getString(SECTION, "difficulty_hint_text", "{prev} - {next}"),
+                                   {{"prev", keysFor(_prevAction)}, {"next", keysFor(_nextAction)}}),
+            difficultyY, static_cast<float>(difficultySize) * subtitleSpacing,
+            readSize(cfg, "difficulty_hint_size", 12), dim);
+    refreshDifficulty();
+
     const unsigned int controlSize = readSize(cfg, "controls_size", 14);
     const float lineHeight = static_cast<float>(controlSize) * lineSpacing;
     float y = 0.0f;
@@ -89,11 +107,34 @@ namespace rtype::game {
   }
 
   void TitleScene::onUpdate(float) {
+    if (_context.actions.isJustPressed(_prevAction)) changeDifficulty(-1);
+    if (_context.actions.isJustPressed(_nextAction)) changeDifficulty(1);
+
     if (_context.actions.isJustPressed(_startAction)) {
       const std::string sound = _context.config.getString(SECTION, "start_sound");
       if (!sound.empty()) _context.audio.play(sound);
       _context.scenes.changeScene(_nextScene);
     }
+  }
+
+  void TitleScene::changeDifficulty(int step) {
+    const auto count = static_cast<int>(_difficulty.count());
+    if (count <= 1) return;
+    const int current = static_cast<int>(_difficulty.selected(_context.session));
+    _difficulty.select(_context.session, static_cast<std::size_t>(((current + step) % count + count) % count));
+    refreshDifficulty();
+
+    const std::string sound = _context.config.getString(SECTION, "difficulty_sound");
+    if (!sound.empty()) _context.audio.play(sound);
+  }
+
+  void TitleScene::refreshDifficulty() {
+    auto* text = _registry.getComponent<engine::TextComponent>(_difficultyText);
+    if (!text) return;
+    const DifficultyLevel& level = _difficulty.at(_difficulty.selected(_context.session));
+    text->text = engine::formatTemplate(
+      _context.config.getString(SECTION, "difficulty_text", "Difficulty  < {difficulty} >"), {{"difficulty", level.label}});
+    text->color = level.color;
   }
 
   engine::Entity TitleScene::addText(const std::string& text, float anchorY, float offsetY, unsigned int size,

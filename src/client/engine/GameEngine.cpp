@@ -17,7 +17,7 @@ namespace rtype::engine {
       _muteAction(_config.getString("engine", "mute_action", "")),
       _debugAction(_config.getString("debug", "toggle_action", "")),
       _context{_config, _backend->getWindow(), _backend->getInput(), _actions, _resources, _audio,
-               _sceneManager, *_backend, _stats, _debug} {
+               _sceneManager, *_backend, _stats, _debug, _session} {
     _debug.overlayVisible = _config.getBool("debug", "visible", false);
     _actions.loadFromConfig(_config, "input");
     _audio.loadSettings(_config, "audio");

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <cstdint>
 
 namespace rtype::game {
   namespace {
@@ -106,7 +107,9 @@ namespace rtype::game {
                                        int health, int maxHealth, int previous) {
       onHealthChanged(entity, netId, type, health, maxHealth, previous);
     });
-    _network.connectToServer(_host, _port);
+    _difficulty.load(_context.config, "difficulty");
+    _network.connectToServer(_host, _port,
+                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)));
   }
 
   void GameScene::onUpdate(float dt) {
@@ -128,6 +131,10 @@ namespace rtype::game {
       const network::NetworkId me = _network.getLocalNetId();
       const engine::Color color = _context.resources.get(playerAssetFor(me)).tint;
       _hud.setStatus("connected_text", {{"player", std::to_string(playerNumber(me))}}, color);
+      if (const auto difficulty = _network.getServerDifficulty(); difficulty && *difficulty < _difficulty.count()) {
+        const DifficultyLevel& level = _difficulty.at(*difficulty);
+        _hud.setDifficulty(level.label, level.color);
+      }
     } else if (!connected) {
       _connectElapsed += dt;
       if (!_timeoutShown && _connectTimeout > 0.0f && _connectElapsed >= _connectTimeout) {

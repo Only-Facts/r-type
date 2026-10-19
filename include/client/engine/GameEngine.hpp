@@ -5,6 +5,7 @@
 #include "engine/config/Config.hpp"
 #include "engine/core/Clock.hpp"
 #include "engine/core/EngineContext.hpp"
+#include "engine/core/Session.hpp"
 #include "engine/gfx/GfxTypes.hpp"
 #include "engine/input/ActionMap.hpp"
 #include "engine/platform/IBackend.hpp"
@@ -57,6 +58,7 @@ namespace rtype::engine {
     std::string _debugAction;
     FrameStats _stats;
     DebugState _debug;
+    Session _session;
     float _statsElapsed{0.0f};
     int _statsFrames{0};
     EngineContext _context;
