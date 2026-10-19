@@ -7,6 +7,7 @@
 #include "game/Difficulty.hpp"
 #include "game/EntityCatalog.hpp"
 #include "game/Hud.hpp"
+#include "game/SkinCatalog.hpp"
 #include "network/ClientNetworkManager.hpp"
 #include "network/INetworkSocket.hpp"
 #include <memory>
@@ -41,6 +42,8 @@ namespace rtype::game {
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
+    engine::Color playerColor(network::NetworkId netId) const;
+    void addPlayerTag(engine::Entity ship, network::NetworkId netId);
     void playSound(const std::string& configKey);
     void playSoundId(const std::string& soundId);
 
@@ -50,6 +53,7 @@ namespace rtype::game {
     EntityCatalog _catalog;
     Difficulty _difficulty;
     AugmentCatalog _augments;
+    SkinCatalog _skins;
 
     struct FloatingTextStyle {
       std::string font;

@@ -2,6 +2,7 @@
 #include "engine/ecs/Components.hpp"
 #include "exception.hpp"
 #include <algorithm>
+#include <cstddef>
 #include <random>
 
 namespace rtype::game {

@@ -2,6 +2,7 @@
 #include "backend/sfml/SFMLTexture.hpp"
 #include <SFML/Graphics/Rect.hpp>
 #include <SFML/System/Angle.hpp>
+#include <utility>
 
 namespace rtype::backend {
   SFMLSprite::SFMLSprite(std::shared_ptr<engine::ITexture> texture) {

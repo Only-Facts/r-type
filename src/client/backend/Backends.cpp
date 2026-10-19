@@ -1,5 +1,6 @@
 #include "backend/Backends.hpp"
 #include "backend/sfml/SFMLBackend.hpp"
+#include <memory>
 
 namespace rtype::backend {
   void registerBuiltinBackends(engine::BackendFactory& factory) {

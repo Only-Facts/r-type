@@ -7,6 +7,7 @@
 #include "engine/gfx/IText.hpp"
 #include "engine/platform/IWindow.hpp"
 #include "engine/resources/ResourceManager.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>

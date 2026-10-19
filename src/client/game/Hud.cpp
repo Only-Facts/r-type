@@ -3,6 +3,7 @@
 #include "exception.hpp"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace rtype::game {
   namespace {

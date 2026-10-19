@@ -1,4 +1,5 @@
 #include "backend/sfml/SFMLText.hpp"
+#include <utility>
 
 namespace rtype::backend {
   SFMLText::SFMLText(std::shared_ptr<const sf::Font> font)

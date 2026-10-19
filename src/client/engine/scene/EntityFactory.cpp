@@ -1,5 +1,6 @@
 #include "engine/ecs/EntityFactory.hpp"
 #include "engine/ecs/Components.hpp"
+#include <string>
 
 namespace rtype::engine {
   Entity EntityFactory::createSprite(const std::string& assetId, const Vector2f& position, int zIndex) {

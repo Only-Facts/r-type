@@ -8,9 +8,11 @@
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
 #include "network/ProtocolExtension.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,17 +38,22 @@ namespace rtype::client {
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
     void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
 
+    static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
+
     void connectToServer(const std::string& host, unsigned short port,
-                         std::optional<std::uint8_t> difficulty = std::nullopt) {
+                         std::optional<std::uint8_t> difficulty = std::nullopt,
+                         std::optional<std::uint8_t> skin = std::nullopt) {
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
 
+      const std::uint16_t payloadSize = skin ? 2 : difficulty ? 1 : 0;
       network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++,
-                                   static_cast<std::uint16_t>(difficulty ? sizeof(std::uint8_t) : 0)};
+                                   payloadSize};
       network::PacketStreamWriter writer;
       writer << header;
-      if (difficulty) writer << *difficulty;
+      if (difficulty || skin) writer << difficulty.value_or(NO_PREFERENCE);
+      if (skin) writer << *skin;
       _socket.send(writer.getBuffer(), _serverEndpoint);
       _isConnected = false;
       _serverDifficulty.reset();
@@ -92,6 +99,11 @@ namespace rtype::client {
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
     [[nodiscard]] std::optional<std::uint8_t> getServerDifficulty() const { return _serverDifficulty; }
+    [[nodiscard]] std::optional<std::uint8_t> getPlayerSkin(network::NetworkId netId) const {
+      auto it = _playerSkins.find(netId);
+      if (it == _playerSkins.end()) return std::nullopt;
+      return it->second;
+    }
     [[nodiscard]] std::size_t getDroppedPacketCount() const { return _droppedPackets; }
 
   private:
@@ -170,6 +182,11 @@ namespace rtype::client {
           network::NetworkId netId;
           float x, y;
           reader >> netId >> x >> y;
+          if (reader.hasMoreData()) {
+            std::uint8_t skin = NO_PREFERENCE;
+            reader >> skin;
+            if (skin != NO_PREFERENCE) _playerSkins[netId] = skin;
+          }
           spawnEntity(netId, network::ext::ENTITY_PLAYER, x, y);
           break;
         }
@@ -215,6 +232,7 @@ namespace rtype::client {
         if (_onDestroy) _onDestroy(it->second.entity, netId, it->second.type);
         _registry.destroyEntity(it->second.entity);
         _networkToEcs.erase(it);
+        _playerSkins.erase(netId);
       }
     }
 
@@ -255,6 +273,7 @@ namespace rtype::client {
     std::uint32_t _lastSyncSeq{0};
     std::size_t _droppedPackets{0};
     std::optional<std::uint8_t> _serverDifficulty;
+    std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
     bool _isConnected{false};
   };
 }

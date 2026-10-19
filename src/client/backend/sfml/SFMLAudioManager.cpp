@@ -1,5 +1,6 @@
 #include "backend/sfml/SFMLAudioManager.hpp"
 #include "exception.hpp"
+#include <utility>
 
 namespace rtype::backend {
   SFMLAudioManager::~SFMLAudioManager() {    _voices.clear();

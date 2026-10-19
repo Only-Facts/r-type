@@ -3,13 +3,18 @@
 #include "engine/config/Config.hpp"
 #include "exception.hpp"
 #include "game/GameScene.hpp"
+#include "game/SkinScene.hpp"
 #include "game/TitleScene.hpp"
 #include "variables.hpp"
 #include <charconv>
+#include <cstddef>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
+#include <utility>
 
 #define DEFAULT_CONFIG "assets/config/client.cfg"
 #define MAX_DIMENSION 16384
@@ -70,6 +75,7 @@ int main(int argc, const char* argv[]) {
 
     auto& scenes = engine.getSceneManager();
     scenes.addScene("title", std::make_shared<rtype::game::TitleScene>(engine.getContext()));
+    scenes.addScene("skin", std::make_shared<rtype::game::SkinScene>(engine.getContext()));
     scenes.addScene("game", std::make_shared<rtype::game::GameScene>(engine.getContext()));
     scenes.changeScene(cfg.getString("engine", "start_scene", "title"));
 

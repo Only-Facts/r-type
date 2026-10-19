@@ -204,7 +204,35 @@ player who picks one up, "+2 HP" above a healed ship, and sounds on gain and end
 | Damage up (augment 3) | stacks up to level 2, each pickup refreshes 10 s; missiles deal 1 + level damage and use type 8 |
 | Death | every augment of the player ends (`remaining = 0`) |
 
-## 7. Points to look at on the server side
+## 7. Skins: `ConnectReq` and `SpawnPlayer` get one byte
+
+After the difficulty, the player picks a ship on the skin screen. The skin is purely
+visual: it never changes the gameplay. The server only has to relay it to the other
+players.
+
+| Packet | New field (appended, optional) | Description |
+|--------|-------------------------------|-------------|
+| `ConnectReq` (client -> server) | `skin u8`, after `difficulty` | Index of the chosen ship in the client `[skins] list` (0 = first). `payloadSize = 2` |
+| `SpawnPlayer` (server -> client) | `skin u8`, after `posY` | Skin of that player, copied from its `ConnectReq`. `0xFF` = none. `payloadSize = 13` |
+
+When the client sends a skin, the difficulty byte is always present: `0xFF` there means
+"no preference" (the server keeps its own choice).
+
+Backward compatible both ways: the current server ignores the `ConnectReq` payload and
+sends `SpawnPlayer` without the byte. In that case the local player still sees his own
+ship, and the other players are drawn with the default look (`player_1` to `player_4`).
+An unknown skin index is ignored the same way.
+
+Server side, this is the whole change:
+
+```cpp
+std::uint8_t skin = 0xFF;
+if (header.payloadSize >= 2) { std::uint8_t difficulty; reader >> difficulty >> skin; }
+client.skin = skin;
+// in every SpawnPlayer: writer << header << netId << posX << posY << client.skin;
+```
+
+## 8. Points to look at on the server side
 
 These are observations from testing the client against `ServerNetworkManager.hpp`:
 
@@ -225,8 +253,8 @@ These are observations from testing the client against `ServerNetworkManager.hpp
 ## Testing
 
 `tools/mock_server.py` implements this extension (Bydos spawning on the right,
-forward fire, missiles, fire cooldown, collisions, health, death, difficulty, bonuses
-and augments). Run it
+forward fire, missiles, fire cooldown, collisions, health, death, difficulty, bonuses,
+augments and skins). Run it
 instead of the server to test the client:
 
 ```

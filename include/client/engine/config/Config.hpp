@@ -2,6 +2,7 @@
 #define RTYPE_ENGINE_CONFIG_HPP
 
 #include "engine/gfx/GfxTypes.hpp"
+#include <cstddef>
 #include <string>
 #include <unordered_map>
 #include <vector>

@@ -25,6 +25,7 @@ namespace rtype::engine {
     bool isJustReleased(const std::string& action) const;
 
     const std::vector<KeyCode>& getBindings(const std::string& action) const;
+    std::string describe(const std::string& action, const std::string& separator = " / ") const;
 
   private:
     const IInputManager& _input;

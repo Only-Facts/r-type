@@ -1,6 +1,7 @@
 #include "game/EntityCatalog.hpp"
 #include "exception.hpp"
 #include <stdexcept>
+#include <utility>
 namespace rtype::game {
   void EntityCatalog::load(const engine::Config& config, const std::string& section) {
     for (const auto& key : config.getKeys(section)) {

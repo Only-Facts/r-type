@@ -2,6 +2,7 @@
 #define RTYPE_ENGINE_SYSTEMPIPELINE_HPP
 
 #include "engine/ecs/ISystem.hpp"
+#include <cstddef>
 #include <memory>
 #include <utility>
 #include <vector>

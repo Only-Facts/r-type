@@ -6,6 +6,7 @@
 #include "engine/ecs/EntityFactory.hpp"
 #include "engine/ecs/Registry.hpp"
 #include "engine/gfx/GfxTypes.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>

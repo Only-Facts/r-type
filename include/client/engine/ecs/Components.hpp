@@ -60,6 +60,11 @@ namespace rtype::engine {
     bool active{false};
   };
 
+  struct FollowComponent {
+    std::uint32_t target{0};
+    Vector2f offset{0.0f, 0.0f};
+  };
+
   struct LifetimeComponent {
     float remaining{1.0f};
     float duration{0.0f};

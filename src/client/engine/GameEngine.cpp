@@ -2,6 +2,7 @@
 #include "backend/Backends.hpp"
 #include "engine/platform/BackendFactory.hpp"
 #include "exception.hpp"
+#include <utility>
 
 namespace rtype::engine {
   GameEngine::GameEngine(Config config)

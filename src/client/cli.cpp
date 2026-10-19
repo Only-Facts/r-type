@@ -1,4 +1,5 @@
 #include "variables.hpp"
+#include <cstddef>
 #include <iostream>
 #include <ostream>
 

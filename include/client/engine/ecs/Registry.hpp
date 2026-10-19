@@ -6,6 +6,7 @@
 #include <tuple>
 #include <typeindex>
 #include <unordered_map>
+#include <utility>
 
 namespace rtype::engine {
   using Entity = std::uint32_t;

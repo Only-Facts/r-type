@@ -1,5 +1,6 @@
 #include "engine/scene/SceneManager.hpp"
 #include "exception.hpp"
+#include <utility>
 
 namespace rtype::engine {
   void SceneManager::addScene(const std::string& name, std::shared_ptr<IScene> scene) {

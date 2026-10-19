@@ -5,6 +5,7 @@
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Keyboard.hpp>
 #include <array>
+#include <cstddef>
 #include <unordered_map>
 
 namespace rtype::backend {

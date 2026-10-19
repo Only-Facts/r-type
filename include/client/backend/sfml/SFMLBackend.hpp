@@ -8,6 +8,7 @@
 #include "backend/sfml/SFMLWindow.hpp"
 #include "engine/platform/IBackend.hpp"
 #include "engine/platform/WindowConfig.hpp"
+#include <memory>
 
 namespace rtype::backend {
   class SFMLBackend : public engine::IBackend {

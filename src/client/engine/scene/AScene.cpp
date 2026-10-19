@@ -3,6 +3,7 @@
 #include "engine/resources/ResourceManager.hpp"
 #include "engine/systems/BlinkSystem.hpp"
 #include "engine/systems/FlashSystem.hpp"
+#include "engine/systems/FollowSystem.hpp"
 #include "engine/systems/LifetimeSystem.hpp"
 #include "engine/systems/ScreenAnchorSystem.hpp"
 
@@ -15,6 +16,7 @@ namespace rtype::engine {
     _builtinSystems.add<ScreenAnchorSystem>(context.window);
     _builtinSystems.add<BlinkSystem>();
     _builtinSystems.add<FlashSystem>();
+    _builtinSystems.add<FollowSystem>();
     _builtinSystems.add<LifetimeSystem>();
   }
 

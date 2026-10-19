@@ -16,8 +16,10 @@
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 
 namespace rtype::game {
   namespace {
@@ -62,6 +64,7 @@ namespace rtype::game {
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
     _augments.load(context.config, SECTION_AUGMENTS);
+    _skins.load(context.config, "skins");
     const engine::Config& cfg = context.config;
     _floating.font = cfg.getString(SECTION_FLOATING, "font", cfg.getString(SECTION_HUD, "font", "font_hud"));
     _floating.size = static_cast<unsigned int>(std::max(1, cfg.getInt(SECTION_FLOATING, "text_size", 14)));
@@ -95,6 +98,7 @@ namespace rtype::game {
       if (!profile.endSound.empty()) _context.resources.get(profile.endSound, engine::AssetType::Sound);
     });
     _context.resources.get(_floating.font, engine::AssetType::Font);
+    for (std::size_t i = 0; i < _skins.count(); ++i) _context.resources.get(_skins.at(i).asset, engine::AssetType::Texture);
     const std::string heal = _context.config.getString(SECTION_GAME, "player_heal_sound");
     if (!heal.empty()) _context.resources.get(heal, engine::AssetType::Sound);
   }
@@ -135,8 +139,10 @@ namespace rtype::game {
       onAugmentChanged(entity, netId, augment, level, remaining);
     });
     _difficulty.load(_context.config, "difficulty");
+    std::optional<std::uint8_t> skin;
+    if (!_skins.empty()) skin = static_cast<std::uint8_t>(_skins.selected(_context.session));
     _network.connectToServer(_host, _port,
-                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)));
+                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin);
   }
 
   void GameScene::onUpdate(float dt) {
@@ -157,7 +163,7 @@ namespace rtype::game {
     const bool connected = _network.isConnected();
     if (connected && !_wasConnected) {
       const network::NetworkId me = _network.getLocalNetId();
-      const engine::Color color = _context.resources.get(playerAssetFor(me)).tint;
+      const engine::Color color = playerColor(me);
       _hud.setStatus("connected_text", {{"player", std::to_string(playerNumber(me))}}, color);
       if (const auto difficulty = _network.getServerDifficulty(); difficulty && *difficulty < _difficulty.count()) {
         const DifficultyLevel& level = _difficulty.at(*difficulty);
@@ -238,12 +244,7 @@ namespace rtype::game {
     playSound("player_death_sound");
     playSound("game_over_sound");
 
-    std::string keys;
-    for (engine::KeyCode key : _context.actions.getBindings(_context.config.getString("engine", "quit_action", "quit"))) {
-      std::string name(engine::keyCodeToString(key));
-      for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-      keys += (keys.empty() ? "" : " / ") + name;
-    }
+    const std::string keys = _context.actions.describe(_context.config.getString("engine", "quit_action", "quit"));
     _hud.showCenterMessage("destroyed_text", "destroyed_hint_text", {{"keys", keys}},
                            _context.config.getColor(SECTION_HUD, "destroyed_color", engine::Color{255, 90, 90, 255}));
   }
@@ -327,6 +328,7 @@ namespace rtype::game {
   void GameScene::onPlayerSpawned(engine::Entity entity, network::NetworkId netId, bool isLocal) {
     _players.insert(netId);
     _factory.attachSprite(entity, playerAssetFor(netId), _playerZ);
+    addPlayerTag(entity, netId);
 
     engine::InterpolationComponent interpolation;
     interpolation.speed = _interpolationSpeed;
@@ -349,7 +351,42 @@ namespace rtype::game {
   }
 
   std::string GameScene::playerAssetFor(network::NetworkId netId) const {
+    if (!_skins.empty()) {
+      if (netId == _network.getLocalNetId()) return _skins.at(_skins.selected(_context.session)).asset;
+      if (const auto skin = _network.getPlayerSkin(netId))
+        if (const auto index = _skins.find(*skin)) return _skins.at(*index).asset;
+    }
     return _playerAssetPrefix + std::to_string(playerNumber(netId));
+  }
+
+  engine::Color GameScene::playerColor(network::NetworkId netId) const {
+    return _context.resources.get(_playerAssetPrefix + std::to_string(playerNumber(netId))).tint;
+  }
+
+  void GameScene::addPlayerTag(engine::Entity ship, network::NetworkId netId) {
+    const engine::Config& cfg = _context.config;
+    const std::string text = engine::formatTemplate(cfg.getString(SECTION_GAME, "player_tag_text", "P{player}"),
+                                                    {{"player", std::to_string(playerNumber(netId))}});
+    if (text.empty()) return;
+
+    const engine::Entity tag = _registry.createEntity();
+    _registry.addComponent(tag, engine::TransformComponent{});
+
+    engine::FollowComponent follow;
+    follow.target = ship;
+    const auto offset = cfg.getFloatList(SECTION_GAME, "player_tag_offset");
+    follow.offset = offset.size() == 2 ? engine::Vector2f{offset[0], offset[1]} : engine::Vector2f{17.0f, -2.0f};
+    _registry.addComponent(tag, follow);
+
+    engine::TextComponent label;
+    label.fontId = cfg.getString(SECTION_HUD, "font", "font_hud");
+    label.text = text;
+    label.characterSize = static_cast<unsigned int>(std::max(1, cfg.getInt(SECTION_GAME, "player_tag_size", 10)));
+    label.color = playerColor(netId);
+    label.outlineThickness = cfg.getFloat(SECTION_GAME, "player_tag_outline", 2.0f);
+    label.origin = {0.5f, 1.0f};
+    label.zIndex = _playerZ + 1;
+    _registry.addComponent(tag, label);
   }
 
   void GameScene::playSound(const std::string& configKey) {

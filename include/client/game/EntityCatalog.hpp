@@ -2,6 +2,7 @@
 #define RTYPE_GAME_ENTITYCATALOG_HPP
 
 #include "engine/config/Config.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>

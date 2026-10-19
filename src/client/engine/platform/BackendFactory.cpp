@@ -1,6 +1,7 @@
 #include "engine/platform/BackendFactory.hpp"
 #include "exception.hpp"
 #include <algorithm>
+#include <utility>
 
 namespace rtype::engine {
   void BackendFactory::registerBackend(const std::string& name, Creator creator) {

@@ -4,8 +4,9 @@ The client is split in three layers. Each layer only depends on the one below it
 
 ```
 +-----------------------------------------------------------+
-|  game/            R-Type: TitleScene, GameScene,          |
-|                   StarfieldSpawner, Hud                   |
+|  game/            R-Type: TitleScene, SkinScene,          |
+|                   GameScene, StarfieldSpawner, Hud,       |
+|                   SkinCatalog, EntityCatalog              |
 |                   asks for assets by id, actions by name  |
 +-----------------------------------------------------------+
 |  engine/          generic, knows nothing about R-Type     |
@@ -16,7 +17,7 @@ The client is split in three layers. Each layer only depends on the one below it
 |                   SystemPipeline, EntityFactory           |
 |   systems/        Movement, Parallax, Animation,          |
 |                   Interpolation, ScreenAnchor, Lifetime,  |
-|                   Render (sprites + texts)                |
+|                   Follow, Render (sprites + texts)        |
 |   resources/      ResourceManager + asset manifest        |
 |   audio/          IAudioManager, AudioService             |
 |   tools/          DebugOverlay                            |
@@ -145,7 +146,21 @@ first scene with `[engine] start_scene`. Switch scenes with
 `_context.scenes.changeScene("name")` (the title screen does it on the `start` action).
 
 Every `AScene` runs, after its own systems, the built-in `ScreenAnchorSystem`,
-`BlinkSystem`, `LifetimeSystem` and the `DebugOverlay`.
+`BlinkSystem`, `FlashSystem`, `FollowSystem`, `LifetimeSystem` and the `DebugOverlay`.
+`FollowComponent{target, offset}` keeps an entity glued to another one (the `P1` tag
+above a ship) and destroys it when the target disappears.
+
+Scene flow: `title` (difficulty) -> `skin` (ship) -> `game`. The order is only in the
+config (`[title] next_scene`, `[skin_select] next_scene` / `previous_scene`).
+
+### Add a ship skin
+
+1. Declare the texture in `assets/config/assets.cfg` (`[ship_gold]` with `path`, `rect`).
+2. Add `gold` at the end of `[skins] list` and a `[skin:gold]` section with `label`,
+   `asset = ship_gold` and `color`.
+
+Append new skins at the end of the list: the index is what is sent to the server, so
+reordering the list changes the skin the other players see.
 
 ### Debug overlay
 
@@ -167,8 +182,10 @@ Implement `engine::IBackend` (window, input, textures, UDP socket) under
 | `[input]`     | `action = key [key...]` |
 | `[audio]`     | `enabled`, `muted`, `master_volume`, `music_volume`, `sfx_volume` |
 | `[network]`   | `host`, `port`, `interpolation_speed`, `connect_timeout` |
-| `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration` |
+| `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
 | `[title]`     | `font`, `title_*`, `subtitle_*`, `prompt_*`, `difficulty_*`, `start_action`, `next_scene`, `music`, `start_sound`, `server_text`, `controls`, `label_<action>` |
+| `[skins]`     | `list`, `default`; one `[skin:<id>]` per ship: `label`, `asset`, `color`. The index in `list` is the value sent on the network |
+| `[skin_select]` | `font`, `title_*`, `label_*`, `hint_*`, `prev_action`, `next_action`, `start_action`, `back_action`, `next_scene`, `previous_scene`, `carousel_y`, `spacing`, `selected_scale`, `other_scale`, `other_alpha`, `outline_thickness`, `dim_color`, `change_sound`, `confirm_sound`, `back_sound` |
 | `[debug]`     | `font`, `text_size`, `color`, `toggle_action`, `visible`, `refresh`, `text` |
 | `[difficulty]` | `levels`, `default`, `label_<level>`, `color_<level>` |
 | `[augments]` | `<augment id> = <profile>`; profiles in `[augment:<profile>]`: `label`, `color`, `gain_sound`, `end_sound` |

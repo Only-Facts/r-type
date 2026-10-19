@@ -2,6 +2,7 @@
 #include "exception.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>

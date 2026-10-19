@@ -159,13 +159,6 @@ namespace rtype::game {
   }
 
   std::string TitleScene::keysFor(const std::string& action) const {
-    std::string result;
-    for (engine::KeyCode key : _context.actions.getBindings(action)) {
-      std::string name(engine::keyCodeToString(key));
-      std::transform(name.begin(), name.end(), name.begin(),
-                     [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-      result += (result.empty() ? "" : " / ") + name;
-    }
-    return result.empty() ? "-" : result;
+    return _context.actions.describe(action);
   }
 }

@@ -3,6 +3,7 @@
 
 #include "engine/gfx/ITexture.hpp"
 #include <SFML/Graphics/Texture.hpp>
+#include <string>
 
 namespace rtype::backend {
   class SFMLTexture : public engine::ITexture {

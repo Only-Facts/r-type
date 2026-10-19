@@ -5,6 +5,7 @@
 #include <SFML/Audio/Music.hpp>
 #include <SFML/Audio/Sound.hpp>
 #include <SFML/Audio/SoundBuffer.hpp>
+#include <cstddef>
 #include <list>
 #include <memory>
 #include <string>

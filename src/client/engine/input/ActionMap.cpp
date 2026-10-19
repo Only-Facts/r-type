@@ -2,6 +2,7 @@
 #include "engine/config/Config.hpp"
 #include "exception.hpp"
 #include <algorithm>
+#include <cctype>
 
 namespace rtype::engine {
   namespace {
@@ -52,5 +53,16 @@ namespace rtype::engine {
   const std::vector<KeyCode>& ActionMap::getBindings(const std::string& action) const {
     auto it = _bindings.find(action);
     return it != _bindings.end() ? it->second : NO_BINDINGS;
+  }
+
+  std::string ActionMap::describe(const std::string& action, const std::string& separator) const {
+    std::string result;
+    for (KeyCode key : getBindings(action)) {
+      std::string name(keyCodeToString(key));
+      std::transform(name.begin(), name.end(), name.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+      result += (result.empty() ? "" : separator) + name;
+    }
+    return result.empty() ? "-" : result;
   }
 }

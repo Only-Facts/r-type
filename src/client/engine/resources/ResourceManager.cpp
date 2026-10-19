@@ -1,6 +1,8 @@
 #include "engine/resources/ResourceManager.hpp"
 #include "engine/config/Config.hpp"
 #include "exception.hpp"
+#include <string_view>
+#include <utility>
 
 namespace rtype::engine {
   std::string_view assetTypeToString(AssetType type) {
