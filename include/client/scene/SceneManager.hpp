@@ -16,7 +16,6 @@ namespace rtype::engine {
     void addScene(const std::string& name, std::shared_ptr<IScene> scene);
     void removeScene(const std::string& name);
 
-    // The switch happens at the start of the next update(), so a scene can request it from its own update().
     void changeScene(const std::string& name);
 
     void requestQuit();
