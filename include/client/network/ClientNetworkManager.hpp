@@ -43,6 +43,7 @@ namespace rtype::client {
     void connectToServer(const std::string& host, unsigned short port,
                          std::optional<std::uint8_t> difficulty = std::nullopt,
                          std::optional<std::uint8_t> skin = std::nullopt) {
+
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
@@ -60,6 +61,7 @@ namespace rtype::client {
     }
 
     void update([[maybe_unused]] float dt) {
+
       processIncomingPackets();
     }
 
