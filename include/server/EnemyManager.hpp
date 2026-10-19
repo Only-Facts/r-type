@@ -13,8 +13,6 @@ namespace rtype::server {
     game::EnemyType type;
     float posX;
     float posY;
-    float baseY;
-    float age;
     int health;
   };
 

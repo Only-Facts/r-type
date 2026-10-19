@@ -1,6 +1,5 @@
 #include "EnemyManager.hpp"
 #include <array>
-#include <cmath>
 #include <vector>
 
 namespace rtype::server {
@@ -8,17 +7,13 @@ namespace rtype::server {
     struct EnemyStats {
       game::Hitbox hitbox;
       float speed;
-      float waveAmplitude;
-      float waveFrequency;
       int maxHealth;
       std::uint32_t scoreValue;
       float explosionScale;
     };
 
     constexpr std::array<EnemyStats, static_cast<std::size_t>(game::EnemyType::Count)> ENEMY_STATS{{
-      {{3.0f, 3.0f, 42.0f, 39.0f}, 320.0f, 90.0f, 3.0f, 1, 100, 3.0f},
-      {{6.0f, 6.0f, 78.0f, 66.0f}, 200.0f, 0.0f, 0.0f, 2, 200, 5.0f},
-      {{6.0f, 6.0f, 84.0f, 81.0f}, 120.0f, 40.0f, 1.2f, 4, 400, 6.0f},
+      {{3.0f, 3.0f, 42.0f, 39.0f}, 320.0f, 1, 100, 3.0f},
     }};
 
     constexpr float SCREEN_EDGE_MARGIN = 20.0f;
@@ -86,12 +81,12 @@ namespace rtype::server {
     const EnemyStats& stats = getStats(type);
 
     const float spriteHeight = stats.hitbox.height + 2.0f * stats.hitbox.y;
-    const float minY = SCREEN_EDGE_MARGIN + stats.waveAmplitude;
-    const float maxY = game::WORLD_HEIGHT - SCREEN_EDGE_MARGIN - stats.waveAmplitude - spriteHeight;
+    const float minY = SCREEN_EDGE_MARGIN;
+    const float maxY = game::WORLD_HEIGHT - SCREEN_EDGE_MARGIN - spriteHeight;
     std::uniform_real_distribution<float> yDistribution(minY, maxY);
     const float spawnY = yDistribution(_rng);
 
-    const Enemy enemy{_nextEnemyId++, type, game::WORLD_WIDTH, spawnY, spawnY, 0.0f, stats.maxHealth};
+    const Enemy enemy{_nextEnemyId++, type, game::WORLD_WIDTH, spawnY, stats.maxHealth};
     _enemies[enemy.id] = enemy;
   }
 
@@ -101,11 +96,7 @@ namespace rtype::server {
   }
 
   void EnemyManager::moveEnemy(Enemy& enemy, float deltaTime) const {
-    const EnemyStats& stats = getStats(enemy.type);
-
-    enemy.age += deltaTime;
-    enemy.posX -= stats.speed * deltaTime;
-    enemy.posY = enemy.baseY + stats.waveAmplitude * std::sin(enemy.age * stats.waveFrequency);
+    enemy.posX -= getStats(enemy.type).speed * deltaTime;
   }
 
   bool EnemyManager::isOutsideWorld(const Enemy& enemy) const {

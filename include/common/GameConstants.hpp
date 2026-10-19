@@ -32,8 +32,6 @@ namespace rtype::game {
 
   enum class EnemyType : std::uint8_t {
     Spinner = 0,
-    Drone = 1,
-    Crawler = 2,
     Count
   };
 

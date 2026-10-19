@@ -15,8 +15,6 @@ namespace rtype::client {
 
     constexpr std::array<EnemyVisual, static_cast<std::size_t>(game::EnemyType::Count)> ENEMY_VISUALS{{
       {"assets/sprites/enemy_spinner.png", 16, 15, 6, 0.08f, false},
-      {"assets/sprites/enemy_drone.png", 30, 26, 7, 0.12f, true},
-      {"assets/sprites/enemy_crawler.png", 32, 31, 3, 0.15f, true},
     }};
 
     constexpr float SPRITE_SCALE = 3.0f;
