@@ -30,6 +30,10 @@ namespace rtype::client {
         _enemySpriteFactory(enemySpriteFactory),
         _explosionSpriteFactory(explosionSpriteFactory) {}
 
+    ~ClientNetworkManager() {
+      disconnect();
+    }
+
     void connectToServer(const std::string& host, unsigned short port) {
       _serverEndpoint = {host, port};
       _socket.bind(0);

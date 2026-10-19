@@ -10,6 +10,7 @@
 #include "MissileManager.hpp"
 #include <algorithm>
 #include <unordered_map>
+#include <chrono>
 #include <vector>
 
 namespace rtype::server {
@@ -24,6 +25,7 @@ namespace rtype::server {
     std::uint32_t score{0};
     std::uint8_t lives{game::PLAYER_START_LIVES};
     float invincibilityTimer{0.0f};
+    std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
 
     bool isAlive() const { return lives > 0; }
     bool isInvincible() const { return invincibilityTimer > 0.0f; }
@@ -35,6 +37,7 @@ namespace rtype::server {
 
     void update(float dt) {
       processIncomingPackets();
+      checkTimeouts();
       updatePhysics(dt);
       updateMissiles(dt);
       if (!_clients.empty()) _enemyManager.update(dt);
@@ -105,9 +108,19 @@ namespace rtype::server {
 
       if (header.magic != network::PROTOCOL_MAGIC) return;
 
+      network::NetworkId senderNetId = getClientNetIdByEndpoint(sender);
+      if (senderNetId != 0) {
+        auto it = _clients.find(senderNetId);
+        if (it != _clients.end()) {
+          it->second.lastActivity = std::chrono::steady_clock::now();
+        }
+      }
+
       switch (header.type) {
         case network::PacketType::ConnectReq: handleConnect(sender); break;
-        case network::PacketType::Disconnect: handleDisconnect(reader, sender); break;
+        case network::PacketType::Disconnect:
+          if (senderNetId != 0) removeClient(senderNetId);
+          break;
         case network::PacketType::PlayerInput: handleInput(reader); break;
         default: break;
       }
@@ -127,6 +140,15 @@ namespace rtype::server {
       network::PacketStreamWriter payload;
       payload << netId;
       _socket.send(buildPacket(network::PacketType::ConnectAck, payload), endpoint);
+    }
+
+    network::NetworkId getClientNetIdByEndpoint(const network::Endpoint& endpoint) const {
+      for (const auto& [id, client] : _clients) {
+        if (client.endpoint.address == endpoint.address && client.endpoint.port == endpoint.port) {
+          return id;
+        }
+      }
+      return 0;
     }
 
     void handleConnect(const network::Endpoint& sender) {
@@ -160,15 +182,35 @@ namespace rtype::server {
         _socket.send(buildSpawnMissilePacket(missile), sender);
     }
 
-    void handleDisconnect(network::PacketStreamReader& reader, const network::Endpoint& sender) {
-      network::NetworkId netId;
-      reader >> netId;
+    void checkTimeouts() {
+      auto now = std::chrono::steady_clock::now();
+      std::vector<network::NetworkId> timedOutClients;
 
+      for (const auto& [id, client] : _clients) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - client.lastActivity).count();
+        if (elapsed > 5000) {
+          timedOutClients.push_back(id);
+        }
+      }
+
+      for (network::NetworkId id : timedOutClients) {
+        removeClient(id);
+      }
+    }
+
+    void removeClient(network::NetworkId netId) {
       auto it = _clients.find(netId);
-      if (it == _clients.end() || !isSameEndpoint(it->second.endpoint, sender)) return;
+      if (it == _clients.end()) return;
 
       _clients.erase(it);
-      broadcastDestroyEntity(netId);
+
+      network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::DestroyEntity, _outgoingSeq++, sizeof(netId)};
+      network::PacketStreamWriter writer;
+      writer << header << netId;
+
+      for (const auto& [id, client] : _clients) {
+        _socket.send(writer.getBuffer(), client.endpoint);
+      }
     }
 
     void handleInput(network::PacketStreamReader& reader) {
