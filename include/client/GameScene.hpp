@@ -35,6 +35,7 @@ namespace rtype::engine {
               IInputManager& inputMgr,
               ITextFactory& textFactory,
               std::function<void()> onExit,
+              std::function<void()> onQuit,
               std::string host = "127.0.0.1",
               unsigned short port = 4242)
       : _texMgr(texMgr),
@@ -48,7 +49,8 @@ namespace rtype::engine {
         _overlay(textFactory),
         _host(std::move(host)),
         _port(port),
-        _onExit(std::move(onExit)) {
+        _onExit(std::move(onExit)),
+        _onQuit(std::move(onQuit)) {
       _systems.push_back(std::make_unique<client::ProjectileSystem>());
       _systems.push_back(std::make_unique<client::AnimationSystem>());
       _systems.push_back(std::make_unique<client::LifetimeSystem>());
@@ -68,6 +70,11 @@ namespace rtype::engine {
     void update(float dt) override {
       _background->update(dt);
       _stateTimer += dt;
+
+      if (_inputMgr.isKeyJustPressed(KeyCode::KeyQ)) {
+        quitGame();
+        return;
+      }
 
       if (_inputMgr.isKeyJustPressed(KeyCode::Escape)) {
         leave();
@@ -148,13 +155,13 @@ namespace rtype::engine {
       const std::string address = _host + ":" + std::to_string(_port);
       switch (state) {
         case State::Connecting:
-          _overlay.setMessage("CONNECTING", address, "ESC  back to menu");
+          _overlay.setMessage("CONNECTING", address, "ESC  back to menu     Q  quit");
           break;
         case State::ConnectionFailed:
-          _overlay.setMessage("CONNECTION FAILED", "No answer from " + address, "ENTER  back to menu");
+          _overlay.setMessage("CONNECTION FAILED", "No answer from " + address, "ENTER  back to menu     Q  quit");
           break;
         case State::GameOver:
-          _overlay.setMessage("GAME OVER", "SCORE  " + client::Hud::formatScore(_finalScore), "ENTER  back to menu");
+          _overlay.setMessage("GAME OVER", "SCORE  " + client::Hud::formatScore(_finalScore), "ENTER  back to menu     Q  quit");
           break;
         case State::Playing:
           break;
@@ -177,6 +184,13 @@ namespace rtype::engine {
       if (_onExit) _onExit();
     }
 
+    void quitGame() {
+      if (_hasLeft) return;
+      _hasLeft = true;
+      _netMgr.disconnect();
+      if (_onQuit) _onQuit();
+    }
+
     Registry _registry;
     std::unique_ptr<IBackground> _background{std::make_unique<Starfield>()};
     std::vector<std::unique_ptr<ISystem>> _systems;
@@ -194,6 +208,7 @@ namespace rtype::engine {
     std::string _host{"127.0.0.1"};
     unsigned short _port{4242};
     std::function<void()> _onExit;
+    std::function<void()> _onQuit;
 
     State _state{State::Connecting};
     float _stateTimer{0.0f};

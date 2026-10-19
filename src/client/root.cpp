@@ -52,14 +52,15 @@ int main(int argc, const char *argv[]) {
     auto& inputManagerRef = engine.getInputManager();
 
     auto backToMenu = [&scenes]() { scenes.changeScene("menu"); };
+    auto quitGame = [&scenes]() { scenes.requestQuit(); };
     auto startGame = [&]() {
       scenes.addScene("game", std::make_shared<rtype::engine::GameScene>(
-        textureManagerRef, inputManagerRef, textFactory, backToMenu));
+        textureManagerRef, inputManagerRef, textFactory, backToMenu, quitGame));
       scenes.changeScene("game");
     };
 
     scenes.addScene("menu", std::make_shared<rtype::engine::MenuScene>(
-      inputManagerRef, textFactory, startGame, [&scenes]() { scenes.requestQuit(); }));
+      inputManagerRef, textFactory, startGame, quitGame));
     scenes.changeScene("menu");
 
     engine.run();
