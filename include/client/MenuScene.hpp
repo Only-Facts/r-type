@@ -8,19 +8,13 @@
 #include <array>
 #include <functional>
 #include <memory>
-#include <optional>
-#include <string>
 
 namespace rtype::engine {
   class MenuScene : public IScene {
   public:
-    using StartGameCallback = std::function<void(const std::string& host, unsigned short port)>;
-
     MenuScene(IInputManager& inputMgr,
               ITextFactory& textFactory,
-              std::string defaultHost,
-              unsigned short defaultPort,
-              StartGameCallback onStartGame,
+              std::function<void()> onPlay,
               std::function<void()> onQuit);
     ~MenuScene() override = default;
 
@@ -29,33 +23,26 @@ namespace rtype::engine {
     void render(IWindow& window) override;
 
   private:
-    enum class Item { Host, Port, Play, Quit, Count };
+    enum class Button { Play, Quit, Count };
 
-    static constexpr std::size_t ITEM_COUNT = static_cast<std::size_t>(Item::Count);
+    static constexpr std::size_t BUTTON_COUNT = static_cast<std::size_t>(Button::Count);
 
     void moveSelection(int offset);
-    void editSelectedField(const std::string& typedText);
-    void confirm();
-    std::optional<unsigned short> parsePort() const;
-    void refreshItemTexts();
-    bool isEditable(Item item) const;
+    void activateSelectedButton();
+    void quit();
 
     IInputManager& _inputMgr;
     std::unique_ptr<IBackground> _background;
-    StartGameCallback _onStartGame;
+    std::function<void()> _onPlay;
     std::function<void()> _onQuit;
 
     std::shared_ptr<IText> _title;
     std::shared_ptr<IText> _subtitle;
-    std::array<std::shared_ptr<IText>, ITEM_COUNT> _items;
+    std::array<std::shared_ptr<IText>, BUTTON_COUNT> _buttons;
     std::shared_ptr<IText> _selectionMarker;
-    std::shared_ptr<IText> _error;
     std::shared_ptr<IText> _hint;
 
-    std::string _host;
-    std::string _port;
-    Item _selected{Item::Play};
-    float _cursorTimer{0.0f};
+    Button _selected{Button::Play};
   };
 }
 

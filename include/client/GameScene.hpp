@@ -34,9 +34,9 @@ namespace rtype::engine {
     GameScene(ITextureManager& texMgr,
               IInputManager& inputMgr,
               ITextFactory& textFactory,
-              std::string host,
-              unsigned short port,
-              std::function<void()> onExit)
+              std::function<void()> onExit,
+              std::string host = "127.0.0.1",
+              unsigned short port = 4242)
       : _texMgr(texMgr),
         _inputMgr(inputMgr),
         _playerSpriteFactory(_texMgr),
@@ -191,8 +191,8 @@ namespace rtype::engine {
     client::Hud _hud;
     client::MessageOverlay _overlay;
 
-    std::string _host;
-    unsigned short _port;
+    std::string _host{"127.0.0.1"};
+    unsigned short _port{4242};
     std::function<void()> _onExit;
 
     State _state{State::Connecting};
