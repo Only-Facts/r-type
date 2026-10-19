@@ -2,6 +2,7 @@
 #define RTYPE_GAME_GAMESCENE_HPP
 
 #include "engine/core/EngineContext.hpp"
+#include "engine/ecs/Components.hpp"
 #include "engine/scene/AScene.hpp"
 #include "game/AugmentCatalog.hpp"
 #include "game/Difficulty.hpp"
@@ -11,6 +12,7 @@
 #include "network/ClientNetworkManager.hpp"
 #include "network/INetworkSocket.hpp"
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -25,6 +27,9 @@ namespace rtype::game {
     void onInit() override;
     void onUpdate(float dt) override;
 
+  public:
+    void exit() override;
+
   private:
     void onEntitySpawned(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type, bool isLocal);
     void onEntityDestroyed(network::NetworkId netId, network::ext::EntityType type);
@@ -33,12 +38,16 @@ namespace rtype::game {
     void onHealthChanged(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
                          int health, int maxHealth, int previous);
     void onLocalPlayerDestroyed();
+    void onBossSpawned(network::NetworkId netId, const EntityProfile& profile);
+    void playStageMusic();
     void flash(engine::Entity entity);
     void onAugmentChanged(engine::Entity entity, network::NetworkId netId, network::ext::AugmentId augment, int level,
                           float remaining);
     void spawnFloatingText(engine::Entity anchor, const std::string& text, const engine::Color& color);
     void validateCatalog() const;
     void updateConnectionStatus(float dt);
+    void sendInputs();
+    void keepLocalShipOnScreen();
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -72,6 +81,11 @@ namespace rtype::game {
     std::unordered_set<network::NetworkId> _players;
     std::unordered_set<network::NetworkId> _deadPlayers;
     bool _localDead{false};
+    std::optional<engine::Entity> _localShip;
+    std::optional<network::NetworkId> _bossNetId;
+    std::string _bossLabel;
+    bool _bossMusicPlaying{false};
+    engine::Vector2f _localShipSize{0.0f, 0.0f};
 
     std::string _host;
     unsigned short _port;
@@ -88,6 +102,9 @@ namespace rtype::game {
     float _interpolationSpeed;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
+    std::string _menuAction;
+    std::string _menuScene;
+    engine::Vector2f _screenSize;
   };
 }
 

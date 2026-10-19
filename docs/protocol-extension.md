@@ -218,6 +218,21 @@ players.
 When the client sends a skin, the difficulty byte is always present: `0xFF` there means
 "no preference" (the server keeps its own choice).
 
+### Keeping the player number: `previousNetId`
+
+The client shows "Player N" from its network id. After a game over the player goes back to
+the menu and reconnects, so without help it would get a new id and a new number. When it
+reconnects, the client appends the id it had in its previous game:
+
+| Packet | New field (appended, optional) | Description |
+|--------|-------------------------------|-------------|
+| `ConnectReq` (client -> server) | `previousNetId u32`, after `skin` | Id of the client's previous game. `payloadSize = 6`; `difficulty` and `skin` are then always present (`0xFF` = no preference) |
+
+Suggested server rule: if no connected player uses this id, give it back in `ConnectAck`;
+otherwise give a new id as usual. New players keep getting new ids, so a returning player
+finds its number free. The client sends `Disconnect` when it leaves a game, so the id is
+free right away.
+
 Backward compatible both ways: the current server ignores the `ConnectReq` payload and
 sends `SpawnPlayer` without the byte. In that case the local player still sees his own
 ship, and the other players are drawn with the default look (`player_1` to `player_4`).
@@ -232,7 +247,24 @@ client.skin = skin;
 // in every SpawnPlayer: writer << header << netId << posX << posY << client.skin;
 ```
 
-## 8. Points to look at on the server side
+## 8. Score: new packet `ScoreUpdate` (server -> client), type `0x15`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| netId | u32  | Player whose score changed |
+| score | u32  | New total score of that player |
+
+Payload size: 8 bytes. The server keeps one score per player and sends it:
+
+- to a newly connected client, for every player already in the game (its own score is 0);
+- to every client each time a player's score changes.
+
+Suggested rule: the player whose missile destroys an enemy gets its points (Bydos 100,
+boss 1000). Ramming an enemy gives no points. The client shows the local player's score
+at the top right ("SCORE 0001500"); it stays hidden while no `ScoreUpdate` was received, so a
+server without this packet changes nothing.
+
+## 9. Points to look at on the server side
 
 These are observations from testing the client against `ServerNetworkManager.hpp`:
 

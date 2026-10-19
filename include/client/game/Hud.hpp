@@ -8,6 +8,7 @@
 #include "engine/gfx/GfxTypes.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,10 @@ namespace rtype::game {
       engine::Color healthLow{230, 70, 70, 255};
       float lowThreshold{0.3f};
       float augmentsTop{2.4f};
+      int scoreDigits{7};
+      engine::Color scoreColor{255, 207, 63, 255};
+      engine::Vector2f bossBarSize{600.0f, 14.0f};
+      engine::Color bossBarColor{230, 70, 70, 255};
       std::unordered_map<std::string, std::string> templates;
     };
 
@@ -53,6 +58,11 @@ namespace rtype::game {
     void notify(const std::string& templateKey, const Params& params);
 
     void setHealth(int current, int max);
+    void setScore(std::uint32_t score);
+
+    void showBoss(const std::string& label, const engine::Color& color);
+    void setBossHealth(int current, int max);
+    void hideBoss();
 
     void setAugment(std::uint8_t id, const std::string& label, const engine::Color& color, int level, float remaining);
     void removeAugment(std::uint8_t id);
@@ -66,7 +76,9 @@ namespace rtype::game {
   private:
     engine::Entity createText(const engine::Vector2f& anchor, const engine::Vector2f& offset,
                               const engine::Vector2f& origin, unsigned int size);
-    engine::Entity createBar(float y, const engine::Color& color, int zIndex);
+    engine::Entity createBar(const engine::Vector2f& anchor, const engine::Vector2f& offset, const engine::Vector2f& size,
+                             const engine::Color& color, int zIndex);
+    void setBarsVisible(std::initializer_list<engine::Entity> bars, bool visible);
     const std::string& getTemplate(const std::string& key) const;
     unsigned int scaled(unsigned int size) const;
 
@@ -76,11 +88,16 @@ namespace rtype::game {
     engine::Entity _status{0};
     engine::Entity _players{0};
     engine::Entity _difficulty{0};
+    engine::Entity _score{0};
     engine::Entity _barBack{0};
     engine::Entity _barFill{0};
     engine::Entity _healthText{0};
     engine::Entity _center{0};
     engine::Entity _centerHint{0};
+    engine::Entity _bossBack{0};
+    engine::Entity _bossFill{0};
+    engine::Entity _bossName{0};
+    std::string _bossLabel;
     std::vector<engine::Entity> _notifications;
 
     struct AugmentSlot {

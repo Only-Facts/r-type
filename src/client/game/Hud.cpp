@@ -16,12 +16,16 @@ namespace rtype::game {
       {"left_text", "Player {player} left the game"},
       {"health_text", "HP {hp}/{max}"},
       {"destroyed_text", "DESTROYED"},
-      {"destroyed_hint_text", "Press {keys} to quit"},
+      {"destroyed_hint_text", "Press {menu} for the menu, {keys} to quit"},
       {"player_destroyed_text", "Player {player} was destroyed"},
       {"difficulty_hud_text", "{difficulty}"},
       {"augment_text", "{label}  {time}s"},
       {"augment_stacked_text", "{label} x{level}  {time}s"},
       {"augment_permanent_text", "{label} x{level}"},
+      {"score_text", "SCORE {score}"},
+      {"boss_text", "{boss}  {hp}/{max}"},
+      {"boss_warning_text", "WARNING - {boss} approaching"},
+      {"boss_defeated_text", "{boss} destroyed"},
     };
 
     engine::Vector2f readPair(const engine::Config& config, const std::string& section, const std::string& key,
@@ -55,6 +59,10 @@ namespace rtype::game {
     s.healthLow = config.getColor(section, "health_color_low", s.healthLow);
     s.lowThreshold = config.getFloat(section, "health_low_threshold", s.lowThreshold);
     s.augmentsTop = config.getFloat(section, "augments_top", s.augmentsTop);
+    s.scoreDigits = std::clamp(config.getInt(section, "score_digits", s.scoreDigits), 1, 10);
+    s.scoreColor = config.getColor(section, "score_color", s.scoreColor);
+    s.bossBarSize = readPair(config, section, "boss_bar_size", s.bossBarSize);
+    s.bossBarColor = config.getColor(section, "boss_bar_color", s.bossBarColor);
 
     if (size <= 0) throw RtypeError("[" + section + "] text_size must be > 0");
     if (s.scale <= 0.0f) throw RtypeError("[" + section + "] scale must be > 0");
@@ -75,39 +83,53 @@ namespace rtype::game {
 
     const float lineHeight = static_cast<float>(scaled(_settings.textSize)) * _settings.lineSpacing;
     _difficulty = createText({1.0f, 0.0f}, {-m, m + lineHeight}, {1.0f, 0.0f}, scaled(_settings.textSize));
+    _score = createText({1.0f, 0.0f}, {-m, m + lineHeight * 2.0f}, {1.0f, 0.0f}, scaled(_settings.textSize));
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_score)) text->color = _settings.scoreColor;
     const float barY = m + lineHeight * _settings.barTop;
-    _barBack = createBar(barY, _settings.barBackColor, 90);
-    _barFill = createBar(barY, _settings.healthHigh, 91);
+    _barBack = createBar({0.0f, 0.0f}, {m, barY}, _settings.barSize, _settings.barBackColor, 90);
+    _barFill = createBar({0.0f, 0.0f}, {m, barY}, _settings.barSize, _settings.healthHigh, 91);
     _healthText = createText({0.0f, 0.0f}, {m + _settings.barSize.x * _settings.scale + m / 2.0f, barY},
                              {0.0f, 0.0f}, scaled(_settings.textSize));
 
     _center = createText({0.5f, 0.42f}, {0.0f, 0.0f}, {0.5f, 0.5f}, scaled(_settings.bigTextSize));
     _centerHint = createText({0.5f, 0.42f}, {0.0f, static_cast<float>(scaled(_settings.bigTextSize))},
                              {0.5f, 0.0f}, scaled(_settings.textSize));
+
+    // boss bar: centered at the top of the screen, name and health above it, notifications below
+    const float bossWidth = _settings.bossBarSize.x * _settings.scale;
+    const float bossBarY = m + lineHeight * 0.75f;
+    _bossName = createText({0.5f, 0.0f}, {0.0f, m}, {0.5f, 0.0f}, scaled(_settings.textSize));
+    _bossBack = createBar({0.5f, 0.0f}, {-bossWidth / 2.0f, bossBarY}, _settings.bossBarSize, _settings.barBackColor, 90);
+    _bossFill = createBar({0.5f, 0.0f}, {-bossWidth / 2.0f, bossBarY}, _settings.bossBarSize, _settings.bossBarColor, 91);
   }
 
-  engine::Entity Hud::createBar(float y, const engine::Color& color, int zIndex) {
+  engine::Entity Hud::createBar(const engine::Vector2f& anchor, const engine::Vector2f& offset,
+                                const engine::Vector2f& size, const engine::Color& color, int zIndex) {
     const engine::Entity entity = _factory.createSprite(_settings.barAsset, {0.0f, 0.0f}, zIndex);
 
-    engine::ScreenAnchorComponent anchor;
-    anchor.anchor = {0.0f, 0.0f};
-    anchor.offset = {_settings.margin, y};
-    _registry.addComponent(entity, anchor);
+    engine::ScreenAnchorComponent screenAnchor;
+    screenAnchor.anchor = anchor;
+    screenAnchor.offset = offset;
+    _registry.addComponent(entity, screenAnchor);
 
     if (auto* sprite = _registry.getComponent<engine::SpriteComponent>(entity)) {
       sprite->tint = color;
       sprite->visible = false;
     }
     if (auto* transform = _registry.getComponent<engine::TransformComponent>(entity))
-      transform->scale = {_settings.barSize.x * _settings.scale, _settings.barSize.y * _settings.scale};
+      transform->scale = {size.x * _settings.scale, size.y * _settings.scale};
     return entity;
+  }
+
+  void Hud::setBarsVisible(std::initializer_list<engine::Entity> bars, bool visible) {
+    for (engine::Entity bar : bars)
+      if (auto* sprite = _registry.getComponent<engine::SpriteComponent>(bar)) sprite->visible = visible;
   }
 
   void Hud::setHealth(int current, int max) {
     const float ratio = max > 0 ? std::clamp(static_cast<float>(current) / static_cast<float>(max), 0.0f, 1.0f) : 0.0f;
 
-    for (engine::Entity bar : {_barBack, _barFill})
-      if (auto* sprite = _registry.getComponent<engine::SpriteComponent>(bar)) sprite->visible = true;
+    setBarsVisible({_barBack, _barFill}, true);
 
     if (auto* transform = _registry.getComponent<engine::TransformComponent>(_barFill))
       transform->scale.x = _settings.barSize.x * _settings.scale * ratio;
@@ -116,6 +138,41 @@ namespace rtype::game {
     if (auto* text = _registry.getComponent<engine::TextComponent>(_healthText))
       text->text = engine::formatTemplate(getTemplate("health_text"),
                                           {{"hp", std::to_string(current)}, {"max", std::to_string(max)}});
+  }
+
+  void Hud::setScore(std::uint32_t score) {
+    std::string digits = std::to_string(score);
+    if (digits.size() < static_cast<std::size_t>(_settings.scoreDigits))
+      digits.insert(0, static_cast<std::size_t>(_settings.scoreDigits) - digits.size(), '0');
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_score))
+      text->text = engine::formatTemplate(getTemplate("score_text"), {{"score", digits}});
+  }
+
+  void Hud::showBoss(const std::string& label, const engine::Color& color) {
+    _bossLabel = label;
+    setBarsVisible({_bossBack, _bossFill}, true);
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_bossName)) {
+      text->text = label;
+      text->color = color;
+    }
+  }
+
+  void Hud::setBossHealth(int current, int max) {
+    const float ratio = max > 0 ? std::clamp(static_cast<float>(current) / static_cast<float>(max), 0.0f, 1.0f) : 0.0f;
+    if (auto* transform = _registry.getComponent<engine::TransformComponent>(_bossFill))
+      transform->scale.x = _settings.bossBarSize.x * _settings.scale * ratio;
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_bossName))
+      text->text = engine::formatTemplate(getTemplate("boss_text"), {{"boss", _bossLabel},
+                                                                     {"hp", std::to_string(std::max(0, current))},
+                                                                     {"max", std::to_string(max)}});
+  }
+
+  void Hud::hideBoss() {
+    setBarsVisible({_bossBack, _bossFill}, false);
+    if (auto* transform = _registry.getComponent<engine::TransformComponent>(_bossFill))
+      transform->scale.x = _settings.bossBarSize.x * _settings.scale;
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_bossName)) text->text.clear();
+    _bossLabel.clear();
   }
 
   void Hud::showCenterMessage(const std::string& templateKey, const std::string& hintKey, const Params& params,
