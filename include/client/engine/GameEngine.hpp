@@ -16,7 +16,6 @@
 #include <string>
 
 namespace rtype::engine {
-
   class GameEngine {
   public:
     explicit GameEngine(Config config);

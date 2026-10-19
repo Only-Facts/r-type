@@ -32,7 +32,6 @@ namespace rtype::engine {
     std::shared_ptr<ISprite> createSprite(const std::string& id);
     std::shared_ptr<IText> createText(const std::string& fontId);
 
-
     void preloadAll();
     void clear();
 

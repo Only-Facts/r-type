@@ -10,8 +10,6 @@
 #include "engine/platform/WindowConfig.hpp"
 
 namespace rtype::backend {
-  /// SFML implementation of every platform service. Owning the concrete window
-  /// and input manager lets it route events without any dynamic_cast.
   class SFMLBackend : public engine::IBackend {
   public:
     explicit SFMLBackend(const engine::WindowConfig& config);

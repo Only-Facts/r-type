@@ -15,7 +15,6 @@
 #include <vector>
 
 namespace rtype::game {
-
   class GameScene : public engine::AScene {
   public:
     explicit GameScene(engine::EngineContext& context);

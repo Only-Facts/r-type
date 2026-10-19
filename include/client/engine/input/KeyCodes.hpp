@@ -23,7 +23,6 @@ namespace rtype::engine {
     Count
   };
 
-
   std::optional<KeyCode> keyCodeFromString(std::string_view name);
 
   std::string_view keyCodeToString(KeyCode key);

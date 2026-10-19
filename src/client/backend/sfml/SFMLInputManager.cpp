@@ -34,7 +34,6 @@ namespace rtype::backend {
   }
 
   void SFMLInputManager::update() {
-
     _pressedThisFrame.fill(false);
     _releasedThisFrame.fill(false);
   }
@@ -59,7 +58,7 @@ namespace rtype::backend {
     if (it == _keyMap.end()) return;
 
     const std::size_t index = indexOf(it->second);
-    if (pressed && !_down[index]) _pressedThisFrame[index] = true;  
+    if (pressed && !_down[index]) _pressedThisFrame[index] = true;
     if (!pressed && _down[index]) _releasedThisFrame[index] = true;
     _down[index] = pressed;
   }

@@ -7,7 +7,6 @@
 #include <vector>
 
 namespace rtype::engine {
-
   class Config {
   public:
     Config() = default;

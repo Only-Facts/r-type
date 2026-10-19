@@ -95,7 +95,7 @@ namespace rtype::game {
 
     if (auto* sprite = _registry.getComponent<engine::SpriteComponent>(entity)) {
       sprite->tint = color;
-      sprite->visible = false;  
+      sprite->visible = false;
     }
     if (auto* transform = _registry.getComponent<engine::TransformComponent>(entity))
       transform->scale = {_settings.barSize.x * _settings.scale, _settings.barSize.y * _settings.scale};

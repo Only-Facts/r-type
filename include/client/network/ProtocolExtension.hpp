@@ -4,11 +4,8 @@
 #include "network/Protocol.hpp"
 #include <cstdint>
 
-
-
 namespace rtype::network::ext {
   constexpr PacketType SPAWN_ENTITY = static_cast<PacketType>(0x12);
-
 
   constexpr PacketType HEALTH_UPDATE = static_cast<PacketType>(0x13);
   constexpr PacketType AUGMENT_UPDATE = static_cast<PacketType>(0x14);

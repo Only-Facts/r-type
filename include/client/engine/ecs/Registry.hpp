@@ -90,7 +90,6 @@ namespace rtype::engine {
         func(entity, component);
     }
 
-
     template<typename T, typename... Others, typename Func>
     void each(Func&& func) {
       auto& data = getPool<T>()->getData();

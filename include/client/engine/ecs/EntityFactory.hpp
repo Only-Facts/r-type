@@ -7,7 +7,6 @@
 #include <string>
 
 namespace rtype::engine {
-
   class EntityFactory {
   public:
     EntityFactory(Registry& registry, const ResourceManager& resources)

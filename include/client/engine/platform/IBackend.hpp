@@ -10,7 +10,6 @@
 #include <memory>
 
 namespace rtype::engine {
-
   class IBackend {
   public:
     virtual ~IBackend() = default;

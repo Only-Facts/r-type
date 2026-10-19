@@ -14,7 +14,6 @@
 #include <vector>
 
 namespace rtype::engine {
-
   class RenderSystem {
   public:
     explicit RenderSystem(ResourceManager& resources) : _resources(resources) {}

@@ -4,7 +4,6 @@
 #include <string>
 
 namespace rtype::engine {
-
   class IAudioManager {
   public:
     virtual ~IAudioManager() = default;

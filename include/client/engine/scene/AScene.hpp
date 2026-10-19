@@ -11,7 +11,6 @@
 #include <utility>
 
 namespace rtype::engine {
-
   class AScene : public IScene {
   public:
     explicit AScene(EngineContext& context);

@@ -4,7 +4,6 @@
 #include "engine/platform/BackendFactory.hpp"
 
 namespace rtype::backend {
-
   void registerBuiltinBackends(engine::BackendFactory& factory);
 }
 

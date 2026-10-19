@@ -17,7 +17,7 @@ namespace rtype::engine {
 
     std::sort(_drawList.begin(), _drawList.end(), [](const DrawItem& a, const DrawItem& b) {
       if (a.zIndex != b.zIndex) return a.zIndex < b.zIndex;
-      if (a.isText != b.isText) return !a.isText;  
+      if (a.isText != b.isText) return !a.isText;
       return a.entity < b.entity;
     });
 

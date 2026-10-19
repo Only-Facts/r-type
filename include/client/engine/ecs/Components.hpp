@@ -6,13 +6,12 @@
 #include <optional>
 #include <string>
 
-
 namespace rtype::engine {
   struct TransformComponent {
     Vector2f position{0.0f, 0.0f};
     float rotation{0.0f};
     Vector2f scale{1.0f, 1.0f};
-    Vector2f targetPosition{0.0f, 0.0f}; 
+    Vector2f targetPosition{0.0f, 0.0f};
   };
 
   struct VelocityComponent {
@@ -20,8 +19,8 @@ namespace rtype::engine {
   };
   struct SpriteComponent {
     std::string assetId;
-    int zIndex{0};                
-    std::optional<Color> tint{};  
+    int zIndex{0};
+    std::optional<Color> tint{};
     bool visible{true};
   };
 
@@ -32,20 +31,19 @@ namespace rtype::engine {
     Color color{255, 255, 255, 255};
     Color outlineColor{0, 0, 0, 255};
     float outlineThickness{0.0f};
-    Vector2f origin{0.0f, 0.0f}; 
+    Vector2f origin{0.0f, 0.0f};
     int zIndex{100};
     bool visible{true};
   };
 
-
   struct ScreenAnchorComponent {
-    Vector2f anchor{0.0f, 0.0f};  
-    Vector2f offset{0.0f, 0.0f};  
+    Vector2f anchor{0.0f, 0.0f};
+    Vector2f offset{0.0f, 0.0f};
   };
 
   struct BlinkComponent {
-    float period{1.0f};        
-    float visibleRatio{0.6f};  
+    float period{1.0f};
+    float visibleRatio{0.6f};
     float elapsed{0.0f};
   };
 
@@ -57,7 +55,7 @@ namespace rtype::engine {
   struct FlashComponent {
     Color color{255, 80, 80, 255};
     float duration{0.15f};
-    float remaining{0.0f};         
+    float remaining{0.0f};
     std::optional<Color> savedTint{};
     bool active{false};
   };
@@ -68,7 +66,6 @@ namespace rtype::engine {
     bool fadeOut{false};
     float fadePortion{1.0f};
   };
-
 
   struct AnimationComponent {
     int frameCount{1};

@@ -22,7 +22,7 @@ namespace rtype::backend {
     const sf::Text& getNative() const { return _text; }
 
   private:
-    std::shared_ptr<const sf::Font> _font;  ///< Must outlive _text.
+    std::shared_ptr<const sf::Font> _font;
     sf::Text _text;
   };
 }

@@ -10,7 +10,6 @@
 #include <vector>
 
 namespace rtype::game {
-
   class StarfieldSpawner {
   public:
     struct Settings {
@@ -31,7 +30,7 @@ namespace rtype::game {
       int planetAlpha{90};
 
       float wrapMargin{300.0f};
-      std::uint32_t seed{0};  
+      std::uint32_t seed{0};
     };
 
     static Settings loadSettings(const engine::Config& config, const std::string& section);

@@ -17,7 +17,6 @@ namespace rtype::engine {
     void bind(const std::string& action, KeyCode key);
     void clear(const std::string& action);
 
-
     void loadFromConfig(const Config& config, const std::string& section);
 
     bool has(const std::string& action) const;

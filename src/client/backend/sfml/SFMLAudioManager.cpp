@@ -14,7 +14,7 @@ namespace rtype::backend {
     const sf::SoundBuffer& buffer = getBuffer(filepath);
 
     update();
-    if (_voices.size() >= MAX_VOICES) _voices.pop_front(); 
+    if (_voices.size() >= MAX_VOICES) _voices.pop_front();
 
     sf::Sound& sound = _voices.emplace_back(buffer);
     sound.setVolume(volume);

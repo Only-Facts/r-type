@@ -4,7 +4,6 @@
 #include <chrono>
 
 namespace rtype::engine {
-
   class Clock {
   public:
     explicit Clock(float maxDelta = 0.25f)

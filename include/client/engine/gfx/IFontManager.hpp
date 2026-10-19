@@ -6,7 +6,6 @@
 #include <string>
 
 namespace rtype::engine {
-
   class IFontManager {
   public:
     virtual ~IFontManager() = default;

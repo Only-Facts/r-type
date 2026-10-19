@@ -19,9 +19,7 @@ namespace rtype::backend {
     bool isKeyJustPressed(engine::KeyCode key) const override;
     bool isKeyJustReleased(engine::KeyCode key) const override;
 
-    /// Fed by SFMLBackend::pollEvents, never by the game.
     void handleEvent(const sf::Event& event);
-    /// Releases every key (window lost focus: avoids "stuck" keys).
     void releaseAll();
 
   private:
@@ -31,9 +29,6 @@ namespace rtype::backend {
     void setKey(sf::Keyboard::Key key, bool pressed);
     static std::size_t indexOf(engine::KeyCode key);
 
-    // Held state, plus per-frame edges recorded from events. Storing edges (instead of
-    // comparing two frame snapshots) keeps a tap whose press AND release land in the
-    // same frame: the old "current vs previous" approach silently lost it.
     std::array<bool, KEY_COUNT> _down{};
     std::array<bool, KEY_COUNT> _pressedThisFrame{};
     std::array<bool, KEY_COUNT> _releasedThisFrame{};

@@ -31,7 +31,7 @@ namespace rtype::backend {
 
   private:
     std::optional<sf::Sprite> _sprite;
-    std::shared_ptr<engine::ITexture> _textureOwner;  ///< Keeps the sf::Texture alive.
+    std::shared_ptr<engine::ITexture> _textureOwner;
   };
 }
 

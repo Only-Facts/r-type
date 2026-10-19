@@ -15,7 +15,6 @@
 #include <utility>
 #include <vector>
 
-
 namespace rtype::client {
   class ClientNetworkManager {
   public:
@@ -113,7 +112,7 @@ namespace rtype::client {
         try {
           handlePacket(data);
         } catch (const RtypeError&) {
-          ++_droppedPackets; 
+          ++_droppedPackets;
         }
       }
     }
@@ -127,8 +126,7 @@ namespace rtype::client {
 
       if (header.magic != network::PROTOCOL_MAGIC) return;
       const bool isSync = header.type == network::PacketType::GameStateSync;
-      if (isSync && header.sequence <= _lastSyncSeq) return;  
-
+      if (isSync && header.sequence <= _lastSyncSeq) return;
 
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
@@ -234,7 +232,6 @@ namespace rtype::client {
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) {
-
         spawnEntity(state.netId, network::ext::ENTITY_PLAYER, state.posX, state.posY);
         return;
       }

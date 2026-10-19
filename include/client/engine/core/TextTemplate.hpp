@@ -7,7 +7,6 @@
 namespace rtype::engine {
   using TemplateParams = std::unordered_map<std::string, std::string>;
 
-
   inline std::string formatTemplate(const std::string& templ, const TemplateParams& params) {
     std::string result = templ;
     for (const auto& [key, value] : params) {

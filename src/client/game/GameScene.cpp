@@ -338,7 +338,7 @@ namespace rtype::game {
 
   void GameScene::onPlayerDestroyed(network::NetworkId netId) {
     _players.erase(netId);
-    if (_deadPlayers.erase(netId) > 0) return; 
+    if (_deadPlayers.erase(netId) > 0) return;
     playSound("leave_sound");
     _hud.notify("left_text", {{"player", std::to_string(playerNumber(netId))}});
   }

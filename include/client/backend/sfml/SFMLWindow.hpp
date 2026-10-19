@@ -20,7 +20,6 @@ namespace rtype::backend {
     void draw(const engine::IText& text) override;
     void display() override;
 
-    /// Backend-internal access, used by SFMLBackend to poll events.
     sf::RenderWindow& getNative() { return _window; }
 
   private:

@@ -31,7 +31,7 @@ namespace rtype::backend {
     const sf::SoundBuffer& getBuffer(const std::string& filepath);
 
     std::unordered_map<std::string, std::unique_ptr<sf::SoundBuffer>> _buffers;
-    std::list<sf::Sound> _voices;  ///< std::list: sounds must not move while playing.
+    std::list<sf::Sound> _voices;
     std::unique_ptr<sf::Music> _music;
     std::string _musicPath;
   };

@@ -4,7 +4,6 @@
 #include "engine/input/KeyCodes.hpp"
 
 namespace rtype::engine {
-
   class IInputManager {
   public:
     virtual ~IInputManager() = default;

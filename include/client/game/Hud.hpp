@@ -13,7 +13,6 @@
 #include <vector>
 
 namespace rtype::game {
-
   class Hud {
   public:
     using Params = engine::TemplateParams;
@@ -21,24 +20,23 @@ namespace rtype::game {
     struct Settings {
       std::string fontId{"font_hud"};
       unsigned int textSize{16};
-      float scale{1.0f}; 
+      float scale{1.0f};
       engine::Color color{255, 255, 255, 255};
       engine::Color outlineColor{0, 0, 0, 255};
       float outlineThickness{2.0f};
       float margin{24.0f};
       float notificationDuration{3.0f};
-      float lineSpacing{1.8f};        
-      float notificationTop{2.0f};     
+      float lineSpacing{1.8f};
+      float notificationTop{2.0f};
       unsigned int bigTextSize{48};
-
 
       std::string barAsset{"ui_pixel"};
       engine::Vector2f barSize{240.0f, 12.0f};
-      float barTop{1.2f};              
+      float barTop{1.2f};
       engine::Color barBackColor{40, 40, 60, 200};
       engine::Color healthHigh{90, 220, 120, 255};
       engine::Color healthLow{230, 70, 70, 255};
-      float lowThreshold{0.3f};        
+      float lowThreshold{0.3f};
       float augmentsTop{2.4f};
       std::unordered_map<std::string, std::string> templates;
     };

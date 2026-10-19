@@ -12,7 +12,7 @@ namespace rtype::game {
     std::string asset;
     int zIndex{0};
     float scale{1.0f};
-    float interpolationSpeed{15.0f}; 
+    float interpolationSpeed{15.0f};
     std::string spawnSound;
     std::string destroySound;
     std::string hitSound;

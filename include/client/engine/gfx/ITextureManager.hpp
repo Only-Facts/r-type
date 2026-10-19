@@ -7,7 +7,6 @@
 #include <string>
 
 namespace rtype::engine {
-
   class ITextureManager {
   public:
     virtual ~ITextureManager() = default;

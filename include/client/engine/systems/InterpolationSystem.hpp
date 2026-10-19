@@ -5,7 +5,6 @@
 #include "engine/ecs/ISystem.hpp"
 
 namespace rtype::engine {
-
   class InterpolationSystem : public ISystem {
   public:
     void update(Registry& registry, float dt) override {

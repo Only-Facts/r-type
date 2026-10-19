@@ -9,7 +9,6 @@
 #include <string>
 
 namespace rtype::game {
-
   class TitleScene : public engine::AScene {
   public:
     explicit TitleScene(engine::EngineContext& context);
