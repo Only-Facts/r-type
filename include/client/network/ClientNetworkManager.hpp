@@ -27,6 +27,7 @@ namespace rtype::client {
       std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType, int, int, int)>;
     using AugmentCallback = std::function<void(engine::Entity, network::NetworkId, network::ext::EntityType,
                                                network::ext::AugmentId, int, float)>;
+    using ScoreCallback = std::function<void(network::NetworkId, std::uint32_t)>;
 
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
@@ -37,31 +38,32 @@ namespace rtype::client {
 
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
     void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
+    void setOnScoreChanged(ScoreCallback callback) { _onScore = std::move(callback); }
 
     static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
 
     void connectToServer(const std::string& host, unsigned short port,
                          std::optional<std::uint8_t> difficulty = std::nullopt,
-                         std::optional<std::uint8_t> skin = std::nullopt) {
-
+                         std::optional<std::uint8_t> skin = std::nullopt,
+                         std::optional<network::NetworkId> previousNetId = std::nullopt) {
       _serverEndpoint = {host, port};
       _socket.bind(0);
       _socket.setNonBlocking(true);
 
-      const std::uint16_t payloadSize = skin ? 2 : difficulty ? 1 : 0;
+      const std::uint16_t payloadSize = previousNetId ? 6 : skin ? 2 : difficulty ? 1 : 0;
       network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++,
                                    payloadSize};
       network::PacketStreamWriter writer;
       writer << header;
-      if (difficulty || skin) writer << difficulty.value_or(NO_PREFERENCE);
-      if (skin) writer << *skin;
+      if (difficulty || skin || previousNetId) writer << difficulty.value_or(NO_PREFERENCE);
+      if (skin || previousNetId) writer << skin.value_or(NO_PREFERENCE);
+      if (previousNetId) writer << *previousNetId;
       _socket.send(writer.getBuffer(), _serverEndpoint);
       _isConnected = false;
       _serverDifficulty.reset();
     }
 
     void update([[maybe_unused]] float dt) {
-
       processIncomingPackets();
     }
 
@@ -168,6 +170,13 @@ namespace rtype::client {
           _onAugment(it->second.entity, netId, it->second.type, augment, level, remaining);
         return;
       }
+      if (header.type == network::ext::SCORE_UPDATE) {
+        network::NetworkId netId;
+        std::uint32_t score;
+        reader >> netId >> score;
+        if (_onScore) _onScore(netId, score);
+        return;
+      }
 
       switch (header.type) {
         case network::PacketType::ConnectAck: {
@@ -266,6 +275,7 @@ namespace rtype::client {
     DestroyCallback _onDestroy;
     HealthCallback _onHealth;
     AugmentCallback _onAugment;
+    ScoreCallback _onScore;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
     std::vector<network::EntityStateData> _snapshot;

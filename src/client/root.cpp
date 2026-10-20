@@ -76,7 +76,9 @@ int main(int argc, const char* argv[]) {
     auto& scenes = engine.getSceneManager();
     scenes.addScene("title", std::make_shared<rtype::game::TitleScene>(engine.getContext()));
     scenes.addScene("skin", std::make_shared<rtype::game::SkinScene>(engine.getContext()));
-    scenes.addScene("game", std::make_shared<rtype::game::GameScene>(engine.getContext()));
+    scenes.addScene("game", [&engine]() -> std::shared_ptr<rtype::engine::IScene> {
+      return std::make_shared<rtype::game::GameScene>(engine.getContext());
+    });
     scenes.changeScene(cfg.getString("engine", "start_scene", "title"));
 
     engine.run();

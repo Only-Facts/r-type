@@ -2,6 +2,7 @@
 #define RTYPE_GAME_ENTITYCATALOG_HPP
 
 #include "engine/config/Config.hpp"
+#include "engine/gfx/GfxTypes.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -17,6 +18,9 @@ namespace rtype::game {
     std::string spawnSound;
     std::string destroySound;
     std::string hitSound;
+    bool boss{false};
+    std::string label;
+    engine::Color color{255, 255, 255, 255};
   };
 
   class EntityCatalog {

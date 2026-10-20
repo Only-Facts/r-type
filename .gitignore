@@ -5,4 +5,5 @@ compile_commands.json
 *.nts
 build*/
 vgcore*
+tools/
 DS.Store

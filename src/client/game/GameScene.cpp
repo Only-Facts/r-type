@@ -8,6 +8,7 @@
 #include "engine/platform/IBackend.hpp"
 #include "engine/platform/IWindow.hpp"
 #include "engine/resources/ResourceManager.hpp"
+#include "engine/scene/SceneManager.hpp"
 #include "engine/systems/AnimationSystem.hpp"
 #include "engine/systems/InterpolationSystem.hpp"
 #include "engine/systems/MovementSystem.hpp"
@@ -36,6 +37,7 @@ namespace rtype::game {
     constexpr const char* SECTION_ENTITY_TYPES = "entity_types";
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
+    constexpr const char* SESSION_NET_ID = "player_net_id";
 
     unsigned short readPort(const engine::Config& config) {
       const int port = config.getInt(SECTION_NETWORK, "port", 4242);
@@ -59,7 +61,11 @@ namespace rtype::game {
       _playerZ(context.config.getInt(SECTION_GAME, "player_z", 10)),
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
-      _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)) {
+      _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
+      _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
+      _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
+      _screenSize{static_cast<float>(context.config.getInt("window", "width", 1920)),
+                  static_cast<float>(context.config.getInt("window", "height", 1080))} {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
@@ -97,6 +103,10 @@ namespace rtype::game {
       if (!profile.gainSound.empty()) _context.resources.get(profile.gainSound, engine::AssetType::Sound);
       if (!profile.endSound.empty()) _context.resources.get(profile.endSound, engine::AssetType::Sound);
     });
+    for (const char* key : {"music", "boss_music"}) {
+      const std::string music = _context.config.getString(SECTION_GAME, key);
+      if (!music.empty()) _context.resources.get(music, engine::AssetType::Music);
+    }
     _context.resources.get(_floating.font, engine::AssetType::Font);
     for (std::size_t i = 0; i < _skins.count(); ++i) _context.resources.get(_skins.at(i).asset, engine::AssetType::Texture);
     const std::string heal = _context.config.getString(SECTION_GAME, "player_heal_sound");
@@ -105,6 +115,18 @@ namespace rtype::game {
 
   GameScene::~GameScene() {
     _network.disconnect();
+  }
+
+  void GameScene::exit() {
+    _network.disconnect();
+    if (_bossMusicPlaying) playStageMusic();
+  }
+
+  void GameScene::playStageMusic() {
+    _bossMusicPlaying = false;
+    const std::string music = _context.config.getString(SECTION_GAME, "music");
+    if (music.empty()) _context.audio.stopMusic();
+    else _context.audio.playMusic(music);
   }
 
   void GameScene::onInit() {
@@ -138,23 +160,63 @@ namespace rtype::game {
                                         network::ext::AugmentId augment, int level, float remaining) {
       onAugmentChanged(entity, netId, augment, level, remaining);
     });
+    _network.setOnScoreChanged([this](network::NetworkId netId, std::uint32_t score) {
+      if (netId == _network.getLocalNetId()) _hud.setScore(score);
+    });
     _difficulty.load(_context.config, "difficulty");
     std::optional<std::uint8_t> skin;
     if (!_skins.empty()) skin = static_cast<std::uint8_t>(_skins.selected(_context.session));
+    // ask for the id of our previous game, so we keep the same player number after a game over
+    std::optional<network::NetworkId> previousNetId;
+    if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
+      previousNetId = static_cast<network::NetworkId>(id);
     _network.connectToServer(_host, _port,
-                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin);
+                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin, previousNetId);
   }
 
   void GameScene::onUpdate(float dt) {
-    const engine::ActionMap& actions = _context.actions;
-    if (_localDead) {
-      _network.sendInputs(false, false, false, false, false);
-    } else _network.sendInputs(actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
-                        actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT),
-                        actions.isActive(ACTION_SHOOT));
+    if (_localDead && _context.actions.isJustPressed(_menuAction)) {
+      _context.scenes.changeScene(_menuScene);
+      return;
+    }
+    sendInputs();
     _network.update(dt);
+    keepLocalShipOnScreen();
     _hud.update(dt);
     updateConnectionStatus(dt);
+  }
+
+  void GameScene::sendInputs() {
+    if (_localDead) {
+      _network.sendInputs(false, false, false, false, false);
+      return;
+    }
+    const engine::ActionMap& actions = _context.actions;
+    bool up = actions.isActive(ACTION_UP);
+    bool down = actions.isActive(ACTION_DOWN);
+    bool left = actions.isActive(ACTION_LEFT);
+    bool right = actions.isActive(ACTION_RIGHT);
+    // the server does not bound movement: drop any input pushing the ship past a screen edge
+    if (const auto* transform = _localShip ? _registry.getComponent<engine::TransformComponent>(*_localShip) : nullptr) {
+      const engine::Vector2f& pos = transform->targetPosition;
+      if (pos.x <= 0.0f) left = false;
+      if (pos.y <= 0.0f) up = false;
+      if (pos.x + _localShipSize.x >= _screenSize.x) right = false;
+      if (pos.y + _localShipSize.y >= _screenSize.y) down = false;
+    }
+    _network.sendInputs(up, down, left, right, actions.isActive(ACTION_SHOOT));
+  }
+
+  void GameScene::keepLocalShipOnScreen() {
+    if (!_localShip) return;
+    auto* transform = _registry.getComponent<engine::TransformComponent>(*_localShip);
+    if (!transform) return;
+    const float maxX = std::max(0.0f, _screenSize.x - _localShipSize.x);
+    const float maxY = std::max(0.0f, _screenSize.y - _localShipSize.y);
+    for (engine::Vector2f* pos : {&transform->position, &transform->targetPosition}) {
+      pos->x = std::clamp(pos->x, 0.0f, maxX);
+      pos->y = std::clamp(pos->y, 0.0f, maxY);
+    }
   }
 
   void GameScene::updateConnectionStatus(float dt) {
@@ -163,6 +225,7 @@ namespace rtype::game {
     const bool connected = _network.isConnected();
     if (connected && !_wasConnected) {
       const network::NetworkId me = _network.getLocalNetId();
+      _context.session.setInt(SESSION_NET_ID, static_cast<int>(me));
       const engine::Color color = playerColor(me);
       _hud.setStatus("connected_text", {{"player", std::to_string(playerNumber(me))}}, color);
       if (const auto difficulty = _network.getServerDifficulty(); difficulty && *difficulty < _difficulty.count()) {
@@ -204,6 +267,19 @@ namespace rtype::game {
       _registry.addComponent(entity, interpolation);
     }
     playSoundId(profile->spawnSound);
+    if (profile->boss) onBossSpawned(netId, *profile);
+  }
+
+  void GameScene::onBossSpawned(network::NetworkId netId, const EntityProfile& profile) {
+    _bossNetId = netId;
+    _bossLabel = profile.label;
+    _hud.showBoss(profile.label, profile.color);
+    _hud.notify("boss_warning_text", {{"boss", profile.label}});
+    const std::string music = _context.config.getString(SECTION_GAME, "boss_music");
+    if (!music.empty()) {
+      _context.audio.playMusic(music);
+      _bossMusicPlaying = true;
+    }
   }
 
   void GameScene::onHealthChanged(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type,
@@ -212,6 +288,7 @@ namespace rtype::game {
     const bool isLocal = isPlayer && netId == _network.getLocalNetId();
 
     if (isLocal) _hud.setHealth(health, maxHealth);
+    if (_bossNetId && netId == *_bossNetId) _hud.setBossHealth(health, maxHealth);
 
     if (health > previous && previous > 0) {
       spawnFloatingText(entity,
@@ -245,7 +322,8 @@ namespace rtype::game {
     playSound("game_over_sound");
 
     const std::string keys = _context.actions.describe(_context.config.getString("engine", "quit_action", "quit"));
-    _hud.showCenterMessage("destroyed_text", "destroyed_hint_text", {{"keys", keys}},
+    _hud.showCenterMessage("destroyed_text", "destroyed_hint_text",
+                           {{"keys", keys}, {"menu", _context.actions.describe(_menuAction)}},
                            _context.config.getColor(SECTION_HUD, "destroyed_color", engine::Color{255, 90, 90, 255}));
   }
 
@@ -323,11 +401,27 @@ namespace rtype::game {
       return;
     }
     if (const EntityProfile* profile = _catalog.find(type)) playSoundId(profile->destroySound);
+    if (_bossNetId && netId == *_bossNetId) {
+      _bossNetId.reset();
+      _hud.hideBoss();
+      _hud.notify("boss_defeated_text", {{"boss", _bossLabel}});
+      if (_bossMusicPlaying) playStageMusic();
+    }
   }
 
   void GameScene::onPlayerSpawned(engine::Entity entity, network::NetworkId netId, bool isLocal) {
     _players.insert(netId);
-    _factory.attachSprite(entity, playerAssetFor(netId), _playerZ);
+    const std::string asset = playerAssetFor(netId);
+    _factory.attachSprite(entity, asset, _playerZ);
+    if (isLocal) {
+      const engine::IntRect rect = _context.resources.createSprite(asset)->getTextureRect();
+      const engine::Vector2f scale = _context.resources.get(asset, engine::AssetType::Texture).scale;
+      const auto* transform = _registry.getComponent<engine::TransformComponent>(entity);
+      const engine::Vector2f entityScale = transform ? transform->scale : engine::Vector2f{1.0f, 1.0f};
+      _localShip = entity;
+      _localShipSize = {static_cast<float>(rect.width) * scale.x * entityScale.x,
+                        static_cast<float>(rect.height) * scale.y * entityScale.y};
+    }
     addPlayerTag(entity, netId);
 
     engine::InterpolationComponent interpolation;
@@ -340,6 +434,7 @@ namespace rtype::game {
 
   void GameScene::onPlayerDestroyed(network::NetworkId netId) {
     _players.erase(netId);
+    if (netId == _network.getLocalNetId()) _localShip.reset();
     if (_deadPlayers.erase(netId) > 0) return;
     playSound("leave_sound");
     _hud.notify("left_text", {{"player", std::to_string(playerNumber(netId))}});

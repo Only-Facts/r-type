@@ -30,6 +30,9 @@ namespace rtype::game {
       profile.spawnSound = config.getString(profileSection, "spawn_sound");
       profile.destroySound = config.getString(profileSection, "destroy_sound");
       profile.hitSound = config.getString(profileSection, "hit_sound");
+      profile.boss = config.getBool(profileSection, "boss", profile.boss);
+      profile.label = config.getString(profileSection, "label", profile.name);
+      profile.color = config.getColor(profileSection, "color", profile.color);
 
       _profiles[static_cast<std::uint8_t>(id)] = std::move(profile);
     }

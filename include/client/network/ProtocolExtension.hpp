@@ -9,6 +9,7 @@ namespace rtype::network::ext {
 
   constexpr PacketType HEALTH_UPDATE = static_cast<PacketType>(0x13);
   constexpr PacketType AUGMENT_UPDATE = static_cast<PacketType>(0x14);
+  constexpr PacketType SCORE_UPDATE = static_cast<PacketType>(0x15);
 
   using AugmentId = std::uint8_t;
   using EntityType = std::uint8_t;

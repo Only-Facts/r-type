@@ -50,11 +50,7 @@ endif()
 
 # FLAGS
 
-if(MSVC)
-  add_compile_options(/W4)
-else()
-  add_compile_options(-Wall -Wextra -Werror -g)
-endif()
+add_compile_options(-Wall -Wextra -Werror -g)
 
 # SRC
 
