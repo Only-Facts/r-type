@@ -24,11 +24,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(WIN)
   find_package(
-    SFML 3.1 COMPONENTS Graphics Window System Network
+    SFML 3.1 COMPONENTS Graphics Window System Network Audio
     QUIET NO_CMAKE_SYSTEM_PATH
   )
 else()
-  find_package(SFML 3.1 COMPONENTS Graphics Window System Network QUIET)
+  find_package(SFML 3.1 COMPONENTS Graphics Window System Network Audio QUIET)
 endif()
 
 if(NOT SFML_FOUND)
@@ -99,7 +99,17 @@ target_include_directories(r-type_client PRIVATE "include/client/")
 
 # LIB
 
+# LIB
+
 target_link_libraries(r-type_server PRIVATE
+  SFML::System
+  SFML::Network
+)
+
+target_link_libraries(r-type_client PRIVATE
+  SFML::Audio
+  SFML::Graphics
+  SFML::Window
   SFML::System
   SFML::Network
 )
@@ -115,3 +125,6 @@ if(WIN32)
   target_link_libraries(r-type_server PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
   target_link_libraries(r-type_client PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
 endif()
+
+add_custom_command(TARGET r-type_client POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:r-type_client>/assets)

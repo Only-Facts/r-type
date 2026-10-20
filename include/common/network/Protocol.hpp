@@ -15,6 +15,7 @@ namespace rtype::network {
     PlayerInput = 0x20,
     GameStateSync = 0x30,
     Ping = 0xE0,
+    Disconnect = 0x03,
     Pong = 0xE1
   };
 
