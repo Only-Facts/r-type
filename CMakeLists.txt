@@ -20,33 +20,45 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# LIB CHECK
+# CPM.cmake
 
-if(WIN)
-  find_package(
-    SFML 3.1 COMPONENTS Graphics Window System Network Audio
-    QUIET NO_CMAKE_SYSTEM_PATH
+set(CPM_DOWNLOAD_VERSION 0.40.2)
+set(
+  CPM_DOWNLOAD_LOCATION
+  "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake"
+)
+
+if(NOT EXISTS "${CPM_DOWNLOAD_LOCATION}")
+  message(STATUS "Downloading CPM.cmake v${CPM_DOWNLOAD_VERSION}")
+  file(DOWNLOAD
+    "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
+    "${CPM_DOWNLOAD_LOCATION}"
+    STATUS CPM_DOWNLOAD_STATUS
   )
-else()
-  find_package(SFML 3.1 COMPONENTS Graphics Window System Network Audio QUIET)
+  list(GET CPM_DOWNLOAD_STATUS 0 CPM_DOWNLOAD_ERROR_CODE)
+  if(NOT CPM_DOWNLOAD_ERROR_CODE EQUAL 0)
+    file(REMOVE "${CPM_DOWNLOAD_LOCATION}")
+    message(FATAL_ERROR "Could not download CPM.cmake: ${CPM_DOWNLOAD_STATUS}")
+  endif()
 endif()
 
-if(NOT SFML_FOUND)
-  include(FetchContent)
-  message(STATUS "SFML 3.1 not found. Downloading & compiling from GitHub...")
+include("${CPM_DOWNLOAD_LOCATION}")
 
-  FetchContent_Declare(
-        SFML
-        GIT_REPOSITORY https://github.com/SFML/SFML.git
-        GIT_TAG 3.1.0
-    )
+# SFML VIA CPM
 
-  set(SFML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(SFML_BUILD_DOC OFF CACHE BOOL "" FORCE)
-  set(SFML_BUILD_TEST_SUITE OFF CACHE BOOL "" FORCE)
-
-  FetchContent_MakeAvailable(SFML)
-endif()
+CPMAddPackage(
+  NAME SFML
+  GITHUB_REPOSITORY SFML/SFML
+  GIT_TAG 3.1.0
+  GIT_SHALLOW ON
+  OPTIONS
+    "BUILD_SHARED_LIBS OFF"
+    "SFML_USE_SYSTEM_DEPS OFF"
+    "SFML_BUILD_AUDIO ON"
+    "SFML_BUILD_EXAMPLES OFF"
+    "SFML_BUILD_DOC OFF"
+    "SFML_BUILD_TEST_SUITE OFF"
+)
 
 # FLAGS
 
@@ -61,18 +73,19 @@ file(GLOB_RECURSE SRC_CLIENT "src/client/*.cpp")
 # EXE
 
 if(WIN32)
-  execute_process(
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-      "/usr/x86_64-w64-mingw32/lib/libcrypt32.a"
-      "${CMAKE_BINARY_DIR}/libCrypt32.a"
-  )
-  execute_process(
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-      "/usr/x86_64-w64-mingw32/lib/libdnsapi.a"
-      "${CMAKE_BINARY_DIR}/libDnsapi.a"
-  )
-
-  link_directories("${CMAKE_BINARY_DIR}")
+  if(UNIX)
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "/usr/x86_64-w64-mingw32/lib/libcrypt32.a"
+        "${CMAKE_BINARY_DIR}/libCrypt32.a"
+    )
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "/usr/x86_64-w64-mingw32/lib/libdnsapi.a"
+        "${CMAKE_BINARY_DIR}/libDnsapi.a"
+    )
+    link_directories("${CMAKE_BINARY_DIR}")
+  endif()
 endif()
 
 add_executable(r-type_server ${SRC_COMMON} ${SRC_SERVER})
@@ -89,13 +102,10 @@ endif()
 # INCLUDE
 
 include_directories("include/common/")
-
 target_include_directories(r-type_server PRIVATE "include/server/")
 target_include_directories(r-type_client PRIVATE "include/client/")
 
-# LIB
-
-# LIB
+# LINK
 
 target_link_libraries(r-type_server PRIVATE
   SFML::System
@@ -104,13 +114,6 @@ target_link_libraries(r-type_server PRIVATE
 
 target_link_libraries(r-type_client PRIVATE
   SFML::Audio
-  SFML::Graphics
-  SFML::Window
-  SFML::System
-  SFML::Network
-)
-
-target_link_libraries(r-type_client PRIVATE
   SFML::Graphics
   SFML::Window
   SFML::System
