@@ -24,6 +24,8 @@ namespace {
     std::string configPath{DEFAULT_CONFIG};
     std::optional<unsigned int> width;
     std::optional<unsigned int> height;
+    std::optional<std::string> host;
+    std::optional<unsigned short> port;
   };
 
   std::optional<unsigned int> parse_dimension(const char* str) {
@@ -47,6 +49,13 @@ namespace {
       } else if (flag == "--config" || flag == "-c") {
         if (i + 1 >= argc) return bad_usage();
         options.configPath = argv[++i];
+      } else if (flag == "--host" || flag == "-H") {
+        if (!argv[i + 1]) return bad_usage();
+        options.host = argv[++i];
+      }
+      else if (flag == "--port" || flag == "-p") {
+        if (!argv[i + 1]) return bad_usage();
+        options.port = static_cast<unsigned short>(std::stoul(argv[++i]));
       } else {
         return bad_usage();
       }
@@ -65,6 +74,8 @@ int main(int argc, const char* argv[]) {
     auto config = rtype::engine::Config::fromFile(options.configPath);
     if (options.width) config.set("window", "width", std::to_string(*options.width));
     if (options.height) config.set("window", "height", std::to_string(*options.height));
+    if (options.host) config.set("network", "host", *options.host);
+    if (options.port) config.set("network", "port", std::to_string(*options.port));
 
     rtype::engine::GameEngine engine(std::move(config));
     const auto& cfg = engine.getConfig();
