@@ -260,11 +260,13 @@ namespace rtype::server {
     }
 
     void updateGameLogic(float dt) {
+      std::vector<network::NetworkId> clientsToRemove;
+
       for (auto& [id, client] : _clients) {
         if (client.dead) {
           client.deathTimer -= dt;
           if (client.deathTimer <= 0.f) {
-            removeClient(id);
+            clientsToRemove.push_back(id);
           }
           continue;
         }
@@ -279,6 +281,10 @@ namespace rtype::server {
           client.shootCooldown = 0.25f;
           spawnPlayerMissile(client);
         }
+      }
+
+      for (auto id : clientsToRemove) {
+        removeClient(id);
       }
 
       _bydoSpawnTimer += dt;
