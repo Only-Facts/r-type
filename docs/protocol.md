@@ -241,7 +241,8 @@ Payload: **12 bytes**.
 The server removes a player that has sent no valid `PlayerInput` for
 **3 seconds**, exactly as if it had sent a `Disconnect`. A connected client
 must therefore keep sending `PlayerInput` packets, even when the player is
-dead or not moving (all buttons set to false).
+not moving (all buttons set to false) or dead (until it is removed, see
+[section 10](#10-states-and-transitions)).
 
 ## 6. Lobby and room packets
 
@@ -442,7 +443,7 @@ Players start with 8 HP in easy, 5 in normal and 4 in hard.
 | --- | --- | --- | --- |
 | 0 | `netId` | `NetworkId` | Player who has the augment. |
 | 4 | `augment` | `u8` | Augment id, see below. |
-| 5 | `level` | `u8` | Stack level. `1` for augments that do not stack. |
+| 5 | `level` | `u8` | Stack level. `1` for augments that do not stack, `0` when the augment ended. |
 | 6 | `remaining` | `f32` | Seconds left. `0` = the augment ended. |
 
 Payload: **10 bytes**. Sent to every player of the room when a player gains,
@@ -472,6 +473,9 @@ Each event carries the server's `sequence` number. Because a retransmitted
 event can arrive after a newer one, a client should apply a `HealthUpdate`,
 `AugmentUpdate` or `ScoreUpdate` only if its `sequence` is newer than the last
 one applied for the same player (and, for augments, the same augment id).
+In the same way, because ids are reused, a `SpawnPlayer` or `SpawnEntity`
+whose `sequence` is older than the `DestroyEntity` already received for the
+same id must be ignored: it is a late copy of the previous entity.
 See [section 11](#11-sequencing-reliability-timeouts-and-errors) for how to
 compare sequence numbers.
 
@@ -530,8 +534,9 @@ Server rules:
 | 8 | `posX` | `f32` | Player position after applying `lastInput`. |
 | 12 | `posY` | `f32` | Player position after applying `lastInput`. |
 
-Payload: **16 bytes**. Sent to each player right before every snapshot,
-once the server has applied at least one of its inputs.
+Payload: **16 bytes**. Sent to each player after each pass of the server
+main loop, right before the snapshot (even when no delta is sent), once the
+server has applied at least one of its inputs.
 
 A client that predicts its own movement uses it to correct itself: drop the
 saved inputs up to `lastInput`, start again from (`posX`, `posY`) and replay
@@ -545,8 +550,8 @@ A snapshot gives the position and velocity of **every player and entity**
 of the room. The server sends one after each pass of its main loop (about
 60 per second), in one of two formats:
 
-- **`GameStateSyncPacked`**: a full snapshot. Sent as the first snapshot,
-  then every **60** snapshots (about once per second), and to a client that
+- **`GameStateSyncPacked`**: a full snapshot. Sent as the first snapshot to
+  every new client, then to everybody every **60** snapshots (about once per second), and to a client that
   asked for one with `SnapshotRequest`.
 - **`GameStateSyncDelta`**: only what changed since the **previous snapshot
   sent by the server**. If nothing changed, no delta is sent.
@@ -719,7 +724,7 @@ timer that causes every transition.
 ```mermaid
 stateDiagram-v2
     [*] --> Lobby
-    Lobby --> Connecting: send ConnectReq\nor RoomJoinAck status 0
+    Lobby --> Connecting: send ConnectReq or RoomJoinAck status 0
     Connecting --> Connecting: no answer after 0.5 s / resend ConnectReq
     Connecting --> Connected: ConnectAck with token != 0
     Connecting --> Lobby: ConnectReject
@@ -727,7 +732,7 @@ stateDiagram-v2
     Connected --> Dead: HealthUpdate for the local player with health 0
     Dead --> Removed: 1.5 s later (server side, no packet)
     Connected --> Removed: no PlayerInput for 3 s (server side, no packet)
-    Connected --> Lobby: send Disconnect\nor RoomLeaveAck status 0
+    Connected --> Lobby: send Disconnect or RoomLeaveAck status 0
     Removed --> Connecting: send ConnectReq with previousNetId
     Failed --> [*]
 ```
@@ -813,7 +818,7 @@ stateDiagram-v2
 | Event | Packets |
 | --- | --- |
 | Hit by an enemy or a missile | `HealthUpdate` to every player of the room. |
-| Health reaches `0` | `HealthUpdate` with `health = 0`, `AugmentUpdate` with `remaining = 0` for each active augment. |
+| Health reaches `0` | `HealthUpdate` with `health = 0`, `AugmentUpdate` with `level = 0` and `remaining = 0` for each active augment. |
 | 1.5 s after death | Player removed: `DestroyEntity` to the other players. |
 
 ## 11. Sequencing, reliability, timeouts and errors
@@ -926,7 +931,7 @@ There is no generic error packet. Errors are reported in three ways:
 | Limit | Value | Applies to |
 | --- | --- | --- |
 | Header | 9 bytes | Every packet. |
-| Maximum datagram | **1200 bytes** (header included) | Every packet received by the server; every lobby packet sent by the server. |
+| Maximum datagram | **1200 bytes** (header included) | Every packet received by the server; lobby answers, `ConnectReject` and `Pong` sent by the server. |
 | Maximum payload | 65535 bytes (`payloadSize` is a `u16`) | Format limit; in practice 1191 bytes because of the datagram limit. |
 | Players per room | 4 (`--room-capacity`, 1 to 4) | `RoomCreateReq.capacity`, default room. |
 | Rooms per server | 16 (`--max-rooms`, 1 to 128) | Default room included. |
@@ -936,15 +941,17 @@ There is no generic error packet. Errors are reported in three ways:
 | Server receive queue | 4096 packets or 4 MiB | Packets received but not processed yet. |
 | Retransmission queue | 4096 packets or 4 MiB, 256 per address | Reliable packets waiting for an `Ack`. |
 | Queued inputs per player | 8 | Oldest input dropped first. |
-| Rate limit | 90 packets per second per address, bursts of 120 | Every packet received by the server. |
-| Rate-limited addresses | 1024 | New addresses above it are dropped. |
+| Rate limit | 90 packets per second per address and port, bursts of 120 | Every packet received by the server. |
+| Rate-limited endpoints | 1024 address and port pairs | Packets from new endpoints above it are dropped. |
 
 With 52 entities, a full snapshot is 9 + 6 + 52 × 12 = 639 bytes, so a
 snapshot always fits in one datagram.
 
-A client sending 60 inputs per second plus its `Ack` packets stays below the
-rate limit in normal play. Each `Ack` counts as one packet, so a client
-should not send anything else at a high rate.
+The rate limit is close to normal traffic: 60 `PlayerInput` per second
+already use 60 of the 90 packets, and **every `Ack` counts too**. A client
+must never send more than one `PlayerInput` per simulation step, and should
+not send other packets (`Ping`, `SnapshotRequest`, lobby requests) at a high
+rate.
 
 ### Rejection rules
 
@@ -955,7 +962,7 @@ The server checks a datagram in this order. The first failing rule drops it,
 2. Shorter than 9 bytes.
 3. `magic` is not `0x5254`.
 4. `payloadSize` is not exactly `datagram size - 9`.
-5. The sender's address is over the rate limit.
+5. The sender's address and port are over the rate limit.
 6. Unknown `type`, or a type the server does not receive (any S → C type).
 7. Wrong payload size for the type (see [section 4](#4-packet-types)).
 8. Payload content invalid: a `bool` other than `0` or `1`, or a field that
