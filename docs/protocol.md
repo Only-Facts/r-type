@@ -101,7 +101,7 @@ until it gets one (see [section 11](#11-sequencing-reliability-timeouts-and-erro
 | `0x01` | `ConnectReq` | C → S | no (client retries) | 0, 1, 2 or 6 | [5](#5-connection-packets) |
 | `0x02` | `ConnectAck` | S → C | yes | 13 | [5](#5-connection-packets) |
 | `0x03` | `Disconnect` | C → S | no | 12 | [5](#5-connection-packets) |
-| `0x04` | `ConnectReject` | S → C | yes | | [5](#5-connection-packets) |
+| `0x04` | `ConnectReject` | S → C | yes | 1 | [5](#5-connection-packets) |
 | `0x05` | `Ack` | C → S | no | 4 | [9](#9-ack-ping-and-pong) |
 | `0x10` | `SpawnPlayer` | S → C | yes | 13 | [7](#7-gameplay-event-packets) |
 | `0x11` | `DestroyEntity` | S → C | yes | 4 | [7](#7-gameplay-event-packets) |
@@ -110,10 +110,10 @@ until it gets one (see [section 11](#11-sequencing-reliability-timeouts-and-erro
 | `0x14` | `AugmentUpdate` | S → C | yes | 10 | [7](#7-gameplay-event-packets) |
 | `0x15` | `ScoreUpdate` | S → C | yes | 8 | [7](#7-gameplay-event-packets) |
 | `0x20` | `PlayerInput` | C → S | no | 17 | [8](#8-inputs-and-snapshots) |
-| `0x30` | `GameStateSync` | S → C | no | variable | [8](#8-inputs-and-snapshots) (legacy, not sent by the current server) |
-| `0x31` | `GameStateSyncPacked` | S → C | no | variable | [8](#8-inputs-and-snapshots) |
-| `0x32` | `GameStateSyncDelta` | S → C | no | variable | [8](#8-inputs-and-snapshots) |
-| `0x33` | `InputAck` | S → C | no | | [8](#8-inputs-and-snapshots) |
+| `0x30` | `GameStateSync` | S → C | no | 2 + 20 × count | [8](#8-inputs-and-snapshots) (legacy, not sent by the current server) |
+| `0x31` | `GameStateSyncPacked` | S → C | no | 6 + 12 × count | [8](#8-inputs-and-snapshots) |
+| `0x32` | `GameStateSyncDelta` | S → C | no | 12 or more | [8](#8-inputs-and-snapshots) |
+| `0x33` | `InputAck` | S → C | no | 16 | [8](#8-inputs-and-snapshots) |
 | `0x34` | `SnapshotRequest` | C → S | no | 12 | [8](#8-inputs-and-snapshots) |
 | `0x40` | `RoomListReq` | C → S | no | 0 | [6](#6-lobby-and-room-packets) |
 | `0x41` | `RoomListAck` | S → C | yes | 2 + 8 × count | [6](#6-lobby-and-room-packets) |
@@ -126,9 +126,8 @@ until it gets one (see [section 11](#11-sequencing-reliability-timeouts-and-erro
 | `0xE0` | `Ping` | C → S | no | 8 | [9](#9-ack-ping-and-pong) |
 | `0xE1` | `Pong` | S → C | no | 8 | [9](#9-ack-ping-and-pong) |
 
-An empty "Payload size" cell is filled in by the section that documents the
-packet. Any other type id is unknown: the server counts it as rejected and
-ignores it.
+Any other type id is unknown: the server counts it as rejected and ignores
+it. A client should ignore unknown types too.
 
 ## 5. Connection packets
 
@@ -466,13 +465,236 @@ compare sequence numbers.
 
 ## 8. Inputs and snapshots
 
-_To be documented: `PlayerInput`, `InputAck`, `GameStateSync`,
-`GameStateSyncPacked`, `GameStateSyncDelta`, `SnapshotRequest`, position
-quantization._
+The server is **authoritative**: the client only sends button states, and
+the server computes every position. The server simulates the game at a
+fixed **60 ticks per second**.
+
+None of the packets in this section is reliable. A lost input is replaced by
+the next one, and a lost snapshot by the next snapshot.
+
+### `PlayerInput` (`0x20`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id received in `ConnectAck`. |
+| 4 | `sessionToken` | `u64` | Token received in `ConnectAck`. |
+| 12 | `up` | `bool` | Button held. |
+| 13 | `down` | `bool` | Button held. |
+| 14 | `left` | `bool` | Button held. |
+| 15 | `right` | `bool` | Button held. |
+| 16 | `shoot` | `bool` | Button held. |
+
+Payload: **17 bytes**. Any other size is dropped.
+
+**The header `sequence` is the input number.** It must increase with every
+`PlayerInput` (the reference client uses one counter for every packet it
+sends, so input numbers can skip values; that is allowed).
+
+Each `PlayerInput` stands for **one simulation step of 1/60 s**. A client
+should send exactly 60 inputs per second, at a fixed rate, even when no
+button is held and even when the player is dead. The reference client sends
+at most 4 inputs in one frame to catch up after a slow frame.
+
+Server rules:
+
+- The packet is dropped if a `bool` is not `0` or `1`, if the id or token is
+  wrong, if it does not come from the player's address and port, or if its
+  `sequence` is not newer than the last accepted input.
+- Accepted inputs are queued. The queue holds **8** inputs; when it is full,
+  the oldest one is dropped. The server applies **up to 2** queued inputs per
+  tick.
+- Each applied input moves the player for 1/60 s at **300 px/s** (diagonals
+  are normalized to the same speed). The position is clamped to
+  `0 ≤ x ≤ 1887` and `0 ≤ y ≤ 1046` (world size minus the 33 × 34 ship).
+- `shoot` fires a missile at most every **0.25 s** while held.
+- While the player is dead, inputs are discarded but still acknowledged.
+
+### `InputAck` (`0x33`, S → C)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `lastInput` | `u32` | `sequence` of the last `PlayerInput` applied (or discarded). |
+| 4 | `tick` | `u32` | Server simulation tick when the ack was sent. |
+| 8 | `posX` | `f32` | Player position after applying `lastInput`. |
+| 12 | `posY` | `f32` | Player position after applying `lastInput`. |
+
+Payload: **16 bytes**. Sent to each player right before every snapshot,
+once the server has applied at least one of its inputs.
+
+A client that predicts its own movement uses it to correct itself: drop the
+saved inputs up to `lastInput`, start again from (`posX`, `posY`) and replay
+the inputs that are not acknowledged yet. An `InputAck` whose `lastInput` is
+not newer than the previous one must be ignored. Prediction must use the
+same movement rules as the server (speed, step and bounds above).
+
+### Snapshots
+
+A snapshot gives the position and velocity of **every player and entity**
+of the room. The server sends one after each pass of its main loop (about
+60 per second), in one of two formats:
+
+- **`GameStateSyncPacked`**: a full snapshot. Sent as the first snapshot,
+  then every **60** snapshots (about once per second), and to a client that
+  asked for one with `SnapshotRequest`.
+- **`GameStateSyncDelta`**: only what changed since the **previous snapshot
+  sent by the server**. If nothing changed, no delta is sent.
+
+Both formats use the same entity state, with positions and velocities
+stored as `i16` instead of `f32`:
+
+#### Packed entity state (12 bytes)
+
+| Offset | Field | Type | Decoding |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Player or entity id. |
+| 4 | `posX` | `i16` | `posX / 8` pixels. |
+| 6 | `posY` | `i16` | `posY / 8` pixels. |
+| 8 | `velX` | `i16` | `velX / 4` pixels per second. |
+| 10 | `velY` | `i16` | `velY / 4` pixels per second. |
+
+Encoding: `round(value × 8)` for positions and `round(value × 4)` for
+velocities, clamped to `-32768`…`32767`. Non-finite values are sent as `0`.
+Precision is 0.125 px for positions and 0.25 px/s for velocities.
+
+#### Snapshot ticks
+
+Every snapshot carries a `tick`: the server simulation tick when it was
+built. Ticks count 60 per second and restart at `0` when the room becomes
+empty. A snapshot whose `tick` is not newer than the last one applied is old
+(it was delayed by the network): use it for interpolation history only, not
+as the current state.
+
+Entities are created and destroyed by the event packets of
+[section 7](#7-gameplay-event-packets). A snapshot only updates the state
+of entities the client knows; a `netId` that has not been spawned yet can be
+ignored or kept until its `SpawnEntity` arrives.
+
+### `GameStateSyncPacked` (`0x31`, S → C)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `tick` | `u32` | Snapshot tick. |
+| 4 | `count` | `u16` | Number of entity states. |
+| 6 | `entities` | `count` × packed entity state | Every player and entity, in no particular order. |
+
+Payload: **6 + 12 × `count` bytes**. The reference client drops the packet
+if `count` is above 256 or if the payload size does not match `count`.
+
+### `GameStateSyncDelta` (`0x32`, S → C)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `tick` | `u32` | Tick of the snapshot this delta builds. |
+| `baseTick` | `u32` | Tick of the snapshot the delta applies to. |
+| `changedCount` | `u16` | Number of changed records. |
+| `changed` | `changedCount` × changed record | See below. |
+| `removedCount` | `u16` | Number of removed ids. |
+| `removed` | `removedCount` × `NetworkId` | Ids that are no longer in the snapshot. |
+
+Changed record (**5 to 13 bytes**):
+
+| Field | Type | Present if |
+| --- | --- | --- |
+| `netId` | `NetworkId` | always |
+| `mask` | `u8` | always |
+| `posX` | `i16` | `mask & 0x01` |
+| `posY` | `i16` | `mask & 0x02` |
+| `velX` | `i16` | `mask & 0x04` |
+| `velY` | `i16` | `mask & 0x08` |
+
+Payload: **12 + size of the changed records + 4 × `removedCount` bytes**.
+The smallest delta (nothing changed, nothing removed) is 12 bytes.
+
+To rebuild the snapshot `tick`:
+
+1. Find the snapshot `baseTick` that the client already rebuilt. The client
+   must therefore **keep the last snapshots** (the reference client keeps 64).
+2. Copy it, remove the `removed` ids, then for each changed record copy the
+   fields given by `mask`.
+3. A `netId` that is not in the base snapshot is a new entity: its record
+   must have `mask = 0x0F` (all fields).
+4. Store the result under `tick`. If a snapshot with this `tick` already
+   exists, ignore the delta.
+
+The delta is invalid, and must be dropped, if `changedCount` or
+`removedCount` is above 256, if a `mask` is `0` or has bits other than
+`0x0F`, if a new entity has a partial `mask`, or if bytes remain after the
+`removed` list.
+
+**If the base snapshot is missing** (a snapshot was lost), keep the delta for
+a short time, because the base may still arrive. The reference client waits
+**100 ms** and keeps at most **16** waiting deltas. Then it sends a
+`SnapshotRequest` and waits for the next `GameStateSyncPacked`.
+
+### `SnapshotRequest` (`0x34`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id received in `ConnectAck`. |
+| 4 | `sessionToken` | `u64` | Token received in `ConnectAck`. |
+
+Payload: **12 bytes**. Any other size, wrong id or token, or a packet from
+another address is dropped.
+
+The next snapshot sent to this client is a `GameStateSyncPacked`. The request
+is not acknowledged: if no full snapshot arrives, send it again. The
+reference client sends at most one request every **250 ms**.
+
+### `GameStateSync` (`0x30`, S → C, legacy)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `count` | `u16` | Number of entity states. |
+| 2 | `entities` | `count` × entity state | See below. |
+
+Entity state (**20 bytes**): `netId` (`NetworkId`), `posX`, `posY`, `velX`,
+`velY` (`f32` each).
+
+Payload: **2 + 20 × `count` bytes**. This is the first snapshot format, with
+no tick. The current server never sends it; the reference client still reads
+it and ignores it if its header `sequence` is not newer than the last one.
 
 ## 9. Ack, Ping and Pong
 
-_To be documented._
+### `Ack` (`0x05`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `sequence` | `u32` | Header `sequence` of the reliable packet being acknowledged. |
+
+Payload: **4 bytes**. Any other size is dropped.
+
+- The client must send one `Ack` for **every** reliable packet it receives
+  (the 12 packets marked "yes" in [section 4](#4-packet-types)), **including
+  duplicates**: a duplicate means the previous `Ack` was lost.
+- The server then stops retransmitting that packet to this address.
+- Only the client sends `Ack`. Packets sent by the client are never
+  acknowledged by the server.
+
+Full rules are in [section 11](#11-sequencing-reliability-timeouts-and-errors).
+
+### `Ping` (`0xE0`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `timestamp` | `u64` | Any value chosen by the client, usually its send time. |
+
+Payload: **8 bytes**. Any other size is dropped.
+
+The server does not read `timestamp`: it copies it into a `Pong`. A `Ping`
+does not need a connection, so it also works before `ConnectReq` (for
+example to measure latency in a server list). The reference client does not
+send `Ping` yet.
+
+### `Pong` (`0xE1`, S → C)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `timestamp` | `u64` | Same value as in the `Ping`. |
+
+Payload: **8 bytes**. The round-trip time is "time when the `Pong` arrives
+minus `timestamp`", if `timestamp` was the send time. `Pong` is not
+reliable: a `Ping` without answer can be counted as lost.
 
 ## 10. States and transitions
 
