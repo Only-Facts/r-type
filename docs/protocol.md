@@ -132,8 +132,107 @@ ignores it.
 
 ## 5. Connection packets
 
-_To be documented: `ConnectReq`, `ConnectAck`, `ConnectReject`, `Disconnect`,
-session token, `previousNetId`._
+A client joins a game with `ConnectReq`. The server answers with `ConnectAck`,
+which gives the client its player id and a **session token**. Every later
+packet that acts on the player (`PlayerInput`, `Disconnect`,
+`SnapshotRequest`, `RoomLeaveReq`) must carry both values, and must come from
+the same address and port as the `ConnectReq`.
+
+### `ConnectReq` (`0x01`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `difficulty` | `u8` | `0` = easy, `1` = normal, `2` = hard, `0xFF` = no preference. |
+| 1 | `skin` | `u8` | Ship skin index, `0xFF` = no preference. |
+| 2 | `previousNetId` | `u32` | Player id from a previous game, to keep the same player number. |
+
+The payload is **0, 1, 2 or 6 bytes** long. A field is only present if all
+the fields before it are present: to send only `skin`, send
+`difficulty = 0xFF` first. Any other payload size is dropped.
+
+Server rules:
+
+- `difficulty` above `2` (other than `0xFF`) is treated as `1`. `0xFF` means `1`.
+- The first player of a room chooses the difficulty. Later players get the
+  room's current difficulty, whatever they ask for. Rooms created with a
+  fixed difficulty ignore the field (see [section 6](#6-lobby-and-room-packets)).
+- `previousNetId` is used only if it is in the range `1000`–`1999` and no
+  other player of the room uses it. Otherwise the server picks a free id.
+- If the sender's address and port are already in a room, the server does not
+  create a new player: it sends the same `ConnectAck` again (same id, same
+  token) and resends the current world. This makes `ConnectReq` safe to repeat.
+- If the sender is not in any room, the request goes to the **default room**.
+  If that room is full, the server answers `ConnectReject` with reason `1`.
+
+`ConnectReq` is not acknowledged. The client retries it itself (see
+[section 11](#11-sequencing-reliability-timeouts-and-errors)).
+
+### `ConnectAck` (`0x02`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id of the local player, in `1000`–`1999`. |
+| 4 | `difficulty` | `u8` | Difficulty actually used by the room: `0`, `1` or `2`. |
+| 5 | `sessionToken` | `u64` | Random secret for this player. Never `0`. |
+
+Payload: **13 bytes**.
+
+The client is connected once it has received a `ConnectAck` with a non-zero
+token. Right after the `ConnectAck`, the server sends to the new client, in
+this order:
+
+1. `SpawnPlayer` + `HealthUpdate` for the new player;
+2. `SpawnPlayer` + `HealthUpdate` for every other player of the room;
+3. `ScoreUpdate` and active `AugmentUpdate` for every player;
+4. `SpawnEntity` (+ `HealthUpdate` for entities with more than 1 HP) for every
+   entity already in the game.
+
+The other players of the room receive `SpawnPlayer`, `HealthUpdate` and
+`ScoreUpdate` for the new player.
+
+Because these packets travel over UDP, they can arrive **before** the
+`ConnectAck`. A client should keep a `SpawnPlayer` received before the
+`ConnectAck` and apply it once connected (the reference client keeps up to 4).
+
+### `ConnectReject` (`0x04`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `reason` | `u8` | Why the connection was refused. |
+
+Payload: **1 byte**.
+
+| Reason | Meaning |
+| --- | --- |
+| `1` | The default room is full. |
+
+After a `ConnectReject` the client must stop retrying its `ConnectReq`.
+
+### `Disconnect` (`0x03`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id received in `ConnectAck`. |
+| 4 | `sessionToken` | `u64` | Token received in `ConnectAck`. |
+
+Payload: **12 bytes**.
+
+- The server checks that the id exists, that the token matches and that the
+  packet comes from the player's address and port. Otherwise it ignores the
+  packet.
+- On success, the player is removed, its missiles are destroyed, pending
+  reliable packets for its address are cancelled, and the other players
+  receive a `DestroyEntity` with the player's id.
+- The server does **not** answer the leaving client. `Disconnect` is not
+  acknowledged, so it can be lost; in that case the player is removed by the
+  inactivity timeout below.
+
+### Inactivity timeout
+
+The server removes a player that has sent no valid `PlayerInput` for
+**3 seconds**, exactly as if it had sent a `Disconnect`. A connected client
+must therefore keep sending `PlayerInput` packets, even when the player is
+dead or not moving (all buttons set to false).
 
 ## 6. Lobby and room packets
 
