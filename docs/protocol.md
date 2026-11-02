@@ -116,13 +116,13 @@ until it gets one (see [section 11](#11-sequencing-reliability-timeouts-and-erro
 | `0x33` | `InputAck` | S → C | no | | [8](#8-inputs-and-snapshots) |
 | `0x34` | `SnapshotRequest` | C → S | no | 12 | [8](#8-inputs-and-snapshots) |
 | `0x40` | `RoomListReq` | C → S | no | 0 | [6](#6-lobby-and-room-packets) |
-| `0x41` | `RoomListAck` | S → C | yes | variable | [6](#6-lobby-and-room-packets) |
-| `0x42` | `RoomCreateReq` | C → S | no | | [6](#6-lobby-and-room-packets) |
-| `0x43` | `RoomCreateAck` | S → C | yes | | [6](#6-lobby-and-room-packets) |
-| `0x44` | `RoomJoinReq` | C → S | no | | [6](#6-lobby-and-room-packets) |
-| `0x45` | `RoomJoinAck` | S → C | yes | | [6](#6-lobby-and-room-packets) |
+| `0x41` | `RoomListAck` | S → C | yes | 2 + 8 × count | [6](#6-lobby-and-room-packets) |
+| `0x42` | `RoomCreateReq` | C → S | no | 2 | [6](#6-lobby-and-room-packets) |
+| `0x43` | `RoomCreateAck` | S → C | yes | 5 | [6](#6-lobby-and-room-packets) |
+| `0x44` | `RoomJoinReq` | C → S | no | 10 | [6](#6-lobby-and-room-packets) |
+| `0x45` | `RoomJoinAck` | S → C | yes | 5 | [6](#6-lobby-and-room-packets) |
 | `0x46` | `RoomLeaveReq` | C → S | no | 12 | [6](#6-lobby-and-room-packets) |
-| `0x47` | `RoomLeaveAck` | S → C | yes | | [6](#6-lobby-and-room-packets) |
+| `0x47` | `RoomLeaveAck` | S → C | yes | 5 | [6](#6-lobby-and-room-packets) |
 | `0xE0` | `Ping` | C → S | no | 8 | [9](#9-ack-ping-and-pong) |
 | `0xE1` | `Pong` | S → C | no | 8 | [9](#9-ack-ping-and-pong) |
 
@@ -236,14 +236,233 @@ dead or not moving (all buttons set to false).
 
 ## 6. Lobby and room packets
 
-_To be documented: `RoomListReq` / `RoomListAck`, `RoomCreateReq` /
-`RoomCreateAck`, `RoomJoinReq` / `RoomJoinAck`, `RoomLeaveReq` /
-`RoomLeaveAck`, result codes._
+One server hosts several independent games called **rooms**. Each room has
+its own players, entities and score.
+
+- **Room `1` is the default room.** It always exists and is never deleted.
+  A plain `ConnectReq` puts the player there. Its difficulty is chosen by its
+  first player.
+- Other rooms are created with `RoomCreateReq`. Their ids start at `2`, their
+  difficulty is fixed at creation, and they are deleted after staying empty
+  for **30 seconds**.
+- A room holds at most **4** players. The server holds at most **16** rooms,
+  the default room included. The server options `--room-capacity` (1 to 4)
+  and `--max-rooms` (1 to 128) change these values.
+- A client address and port can be in only one room at a time.
+
+Every `*Ack` of this section is reliable. The requests are not: if no answer
+comes, the client sends the request again. All requests can be repeated
+safely (see each packet).
+
+### `RoomListReq` (`0x40`, C → S)
+
+Empty payload (**0 bytes**). Any other size is dropped.
+
+### `RoomListAck` (`0x41`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `count` | `u16` | Number of rooms that follow. |
+| 2 | `rooms` | `count` × room entry | Sorted by room id, smallest first. |
+
+Room entry (**8 bytes**):
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `roomId` | `u32` | Room id. |
+| 4 | `players` | `u8` | Players currently in the room. |
+| 5 | `capacity` | `u8` | Maximum number of players. |
+| 6 | `state` | `u8` | `0` = waiting (empty), `1` = running, `2` = full. |
+| 7 | `difficulty` | `u8` | `0` = easy, `1` = normal, `2` = hard. |
+
+Payload: **2 + 8 × `count` bytes**.
+
+### `RoomCreateReq` (`0x42`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `capacity` | `u8` | Maximum players, `1` to `4`. |
+| 1 | `difficulty` | `u8` | `0`, `1` or `2`. `0xFF` is **not** accepted here. |
+
+Payload: **2 bytes**. Any other size is dropped.
+
+Creating a room does **not** join it: the client must then send a
+`RoomJoinReq` with the new room id. If the same client sends
+`RoomCreateReq` again before joining, the server answers with the room it
+already created instead of creating a second one.
+
+### `RoomJoinReq` (`0x44`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `roomId` | `u32` | Room to join. |
+| 4 | `difficulty` | `u8` | Same meaning as in `ConnectReq`. Ignored by rooms with a fixed difficulty. |
+| 5 | `skin` | `u8` | Same meaning as in `ConnectReq`. |
+| 6 | `previousNetId` | `u32` | Same meaning as in `ConnectReq`, `0` if none. |
+
+Payload: **10 bytes**. Any other size is dropped.
+
+When the answer is a success, the server joins the room **for** the client,
+as if it had received a `ConnectReq` with the same fields. The client must
+not send a `ConnectReq` itself: it receives the `RoomJoinAck`, then the
+`ConnectAck` and the world, exactly as described in
+[section 5](#5-connection-packets). Joining a room the client is already in
+answers success again and resends the `ConnectAck` and the world.
+
+### `RoomLeaveReq` (`0x46`, C → S)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id received in `ConnectAck`. |
+| 4 | `sessionToken` | `u64` | Token received in `ConnectAck`. |
+
+Payload: **12 bytes**. Any other size is dropped.
+
+On success, the player leaves the room exactly as with `Disconnect`, and the
+server answers `RoomLeaveAck`. For **10 seconds** after a successful leave,
+the same request (same address, port, id and token) gets the same success
+answer again, so a lost `RoomLeaveAck` can be recovered by repeating the
+request.
+
+### `RoomCreateAck`, `RoomJoinAck`, `RoomLeaveAck` (`0x43`, `0x45`, `0x47`, S → C, reliable)
+
+The three answers share the same format:
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `roomId` | `u32` | Room concerned, or `0` when no room applies. |
+| 4 | `status` | `u8` | `0` = success, other values below. |
+
+Payload: **5 bytes**.
+
+| Packet | Status | Meaning | `roomId` |
+| --- | --- | --- | --- |
+| `RoomCreateAck` | `0` | Room created. | New room id |
+| `RoomCreateAck` | `1` | Invalid `capacity` or `difficulty`, or the client is already in a room. | `0` |
+| `RoomCreateAck` | `2` | Room limit reached. | `0` |
+| `RoomJoinAck` | `0` | Joined (or already in this room). | Requested id |
+| `RoomJoinAck` | `1` | No room with this id. | Requested id |
+| `RoomJoinAck` | `2` | Room full. | Requested id |
+| `RoomJoinAck` | `3` | The client is already in another room. It must leave first. | Requested id |
+| `RoomLeaveAck` | `0` | Left the room. | Room left |
+| `RoomLeaveAck` | `1` | Not in a room, or wrong id or token. | Current room, or `0` |
 
 ## 7. Gameplay event packets
 
-_To be documented: `SpawnPlayer`, `SpawnEntity`, `DestroyEntity`,
-`HealthUpdate`, `AugmentUpdate`, `ScoreUpdate`, entity and augment ids._
+These packets tell the client what exists in the game. Positions are moved
+afterwards by snapshots (see [section 8](#8-inputs-and-snapshots)).
+All of them are **reliable**.
+
+Conventions:
+
+- Positions are `f32` in pixels, in a **1920 × 1080** world, with the origin
+  at the top-left corner and Y going down.
+- Player ids are in `1000`–`1999`. Other entities use ids from `2000`.
+  Ids can be reused after an entity is destroyed.
+- UDP can deliver an event about an entity before its `SpawnPlayer` or
+  `SpawnEntity`. A client should keep, for a short time, events about an id
+  it does not know yet, and apply them once the entity is spawned.
+
+### `SpawnPlayer` (`0x10`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Player id. If it equals the id from `ConnectAck`, this is the local player. |
+| 4 | `posX` | `f32` | Start position. |
+| 8 | `posY` | `f32` | Start position. |
+| 12 | `skin` | `u8` | Ship skin index, `0xFF` = none. |
+
+Payload: **13 bytes**. Sent when a player joins a room, to every player of
+that room.
+
+### `SpawnEntity` (`0x12`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Entity id. |
+| 4 | `type` | `u8` | Entity type, see the table below. |
+| 5 | `posX` | `f32` | Start position. |
+| 9 | `posY` | `f32` | Start position. |
+
+Payload: **13 bytes**.
+
+| Type | Entity |
+| --- | --- |
+| `0` | Player. Reserved: players are always announced by `SpawnPlayer`. |
+| `1` | Bydos (regular enemy). |
+| `2` | Player missile. |
+| `3` | Enemy missile. Also used for the boss shots. |
+| `4` | Bonus: double shot. |
+| `5` | Bonus: triple shot. |
+| `6` | Bonus: heal. |
+| `7` | Bonus: damage up. |
+| `8` | Player missile with damage up (bigger sprite). |
+| `9` | Stage boss. |
+
+The reference client also defines type `10` (boss shot) in its configuration,
+but the current server never sends it. A client should ignore unknown types.
+
+### `DestroyEntity` (`0x11`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Id of the player or entity to remove. |
+
+Payload: **4 bytes**. Sent when an entity dies, is collected or leaves the
+screen, and when a player leaves the room (`Disconnect`, `RoomLeaveReq` or
+timeout). A player whose health reaches `0` is **not** destroyed: it stays in
+the room (see `HealthUpdate`).
+
+### `HealthUpdate` (`0x13`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Player or entity. |
+| 4 | `health` | `u8` | Current health. `0` = dead. |
+| 5 | `maxHealth` | `u8` | Maximum health. |
+
+Payload: **6 bytes**. Sent for every player when it joins and when its health
+changes, and for entities with more than 1 HP (the boss, stronger Bydos).
+Players start with 8 HP in easy, 5 in normal and 4 in hard.
+
+### `AugmentUpdate` (`0x14`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Player who has the augment. |
+| 4 | `augment` | `u8` | Augment id, see below. |
+| 5 | `level` | `u8` | Stack level. `1` for augments that do not stack. |
+| 6 | `remaining` | `f32` | Seconds left. `0` = the augment ended. |
+
+Payload: **10 bytes**. Sent to every player of the room when a player gains,
+refreshes or loses an augment, and to a joining client for every active
+augment. The current server always sends `remaining >= 0`; a client should
+treat a negative value as "permanent".
+
+| Augment | Meaning | Levels |
+| --- | --- | --- |
+| `1` | Double shot | 1 |
+| `2` | Triple shot (replaces double shot) | 1 |
+| `3` | Damage up | 1 to 2 |
+
+### `ScoreUpdate` (`0x15`, S → C, reliable)
+
+| Offset | Field | Type | Description |
+| --- | --- | --- | --- |
+| 0 | `netId` | `NetworkId` | Player whose score changed. |
+| 4 | `score` | `u32` | New **total** score of that player (not a difference). |
+
+Payload: **8 bytes**. Sent to every player of the room when a score changes,
+and to a joining client for every player.
+
+### Event ordering
+
+Each event carries the server's `sequence` number. Because a retransmitted
+event can arrive after a newer one, a client should apply a `HealthUpdate`,
+`AugmentUpdate` or `ScoreUpdate` only if its `sequence` is newer than the last
+one applied for the same player (and, for augments, the same augment id).
+See [section 11](#11-sequencing-reliability-timeouts-and-errors) for how to
+compare sequence numbers.
 
 ## 8. Inputs and snapshots
 
