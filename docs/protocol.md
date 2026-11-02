@@ -409,8 +409,10 @@ but the current server never sends it. A client should ignore unknown types.
 
 Payload: **4 bytes**. Sent when an entity dies, is collected or leaves the
 screen, and when a player leaves the room (`Disconnect`, `RoomLeaveReq` or
-timeout). A player whose health reaches `0` is **not** destroyed: it stays in
-the room (see `HealthUpdate`).
+timeout), to the players that stay in the room. A player whose health
+reaches `0` stays in the room for **1.5 seconds**, then is removed like a
+player that left (see [section 10](#10-states-and-transitions)). The removed
+player itself does not receive this `DestroyEntity`.
 
 ### `HealthUpdate` (`0x13`, S → C, reliable)
 
@@ -698,17 +700,280 @@ reliable: a `Ping` without answer can be counted as lost.
 
 ## 10. States and transitions
 
-_To be documented: connection, lobby, room and game state machines._
+The server does not send its state machines: a client follows them from
+the packets it sends and receives. Each diagram gives the packet or the
+timer that causes every transition.
+
+### Client connection
+
+```mermaid
+stateDiagram-v2
+    [*] --> Lobby
+    Lobby --> Connecting: send ConnectReq\nor RoomJoinAck status 0
+    Connecting --> Connecting: no answer after 0.5 s / resend ConnectReq
+    Connecting --> Connected: ConnectAck with token != 0
+    Connecting --> Lobby: ConnectReject
+    Connecting --> Failed: no ConnectAck after 5 s
+    Connected --> Dead: HealthUpdate for the local player with health 0
+    Dead --> Removed: 1.5 s later (server side, no packet)
+    Connected --> Removed: no PlayerInput for 3 s (server side, no packet)
+    Connected --> Lobby: send Disconnect\nor RoomLeaveAck status 0
+    Removed --> Connecting: send ConnectReq with previousNetId
+    Failed --> [*]
+```
+
+| State | What the client sends | What it must accept |
+| --- | --- | --- |
+| Lobby | `RoomListReq`, `RoomCreateReq`, `RoomJoinReq`, `ConnectReq`, `Ping` | `RoomListAck`, `Room*Ack`, `Pong` |
+| Connecting | `ConnectReq` (retries), `Ack` | `ConnectAck`, `ConnectReject`, and early `SpawnPlayer` / events to keep for later |
+| Connected | `PlayerInput` 60 times per second, `Ack`, `SnapshotRequest`, `Disconnect`, `RoomLeaveReq` | every server packet |
+| Dead | Same as Connected (inputs are discarded by the server) | every server packet |
+| Removed | Nothing valid: inputs are rejected | nothing, until a new `ConnectReq` |
+
+Notes:
+
+- The server never tells a client it was removed. A dead client knows it from
+  its own `HealthUpdate` with `health = 0`; the reference client then shows
+  "game over" and offers to play again.
+- To play again, send a new `ConnectReq` (or `RoomJoinReq`) from the same
+  socket with `previousNetId` set to the old id: the player gets the same
+  number back if it is still free.
+- The 5-second connection timeout is a client choice (`connect_timeout` in
+  `client.cfg`). The reference client stops resending `ConnectReq` after 8
+  retries (about 4 seconds).
+
+### Lobby
+
+```mermaid
+stateDiagram-v2
+    [*] --> Browsing
+    Browsing --> Browsing: RoomListReq / RoomListAck
+    Browsing --> Creating: send RoomCreateReq
+    Creating --> Joining: RoomCreateAck status 0 / send RoomJoinReq(new id)
+    Creating --> Browsing: RoomCreateAck status 1 or 2
+    Browsing --> Joining: send RoomJoinReq
+    Joining --> InRoom: RoomJoinAck status 0
+    Joining --> Browsing: RoomJoinAck status 1, 2 or 3
+    Browsing --> InRoom: send ConnectReq (default room 1)
+    InRoom --> Browsing: RoomLeaveAck status 0
+```
+
+`InRoom` is the `Connecting` / `Connected` part of the client connection
+diagram above.
+
+### Room
+
+```mermaid
+stateDiagram-v2
+    [*] --> Waiting: RoomCreateReq accepted
+    Waiting --> Running: first player joins
+    Running --> Full: players == capacity
+    Full --> Running: a player leaves
+    Running --> Waiting: last player leaves (game reset)
+    Waiting --> [*]: empty for 30 s (never room 1)
+```
+
+The state is the `state` field of `RoomListAck`: `0` = Waiting, `1` =
+Running, `2` = Full. A new room starts its 30-second timer at creation, so a
+room nobody joins is deleted 30 seconds later.
+
+When the last player leaves, the game is **reset**: entities are cleared,
+the stage goes back to 1, entity ids restart at `2000`, and snapshot ticks
+restart at `0`.
+
+### Game
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stage
+    Stage --> Boss: 10 Bydos destroyed in this stage
+    Boss --> Stage: boss destroyed (stage + 1)
+    Stage --> [*]: room empty (reset)
+    Boss --> [*]: room empty (reset)
+```
+
+| Phase | What the client sees |
+| --- | --- |
+| Stage | `SpawnEntity` of Bydos (type `1`), enemy missiles (type `3`) and bonuses (types `4` to `7`). |
+| Boss | `DestroyEntity` for the remaining Bydos, then `SpawnEntity` of type `9` and its `HealthUpdate`. |
+| Boss destroyed | `DestroyEntity` of the boss and a `ScoreUpdate` (+1000) for the player whose missile destroyed it. |
+
+### Player inside a game
+
+| Event | Packets |
+| --- | --- |
+| Hit by an enemy or a missile | `HealthUpdate` to every player of the room. |
+| Health reaches `0` | `HealthUpdate` with `health = 0`, `AugmentUpdate` with `remaining = 0` for each active augment. |
+| 1.5 s after death | Player removed: `DestroyEntity` to the other players. |
 
 ## 11. Sequencing, reliability, timeouts and errors
 
-_To be documented: meaning of `sequence`, reliable packets, `Ack`,
-retransmission timing, timeouts and error codes._
+### The `sequence` field
+
+- **Server packets**: one counter shared by **all rooms and all clients**,
+  starting at `1` and increased for every packet built. A packet sent to
+  several players (a broadcast) has the same `sequence` for all of them.
+  A client therefore sees **gaps** in the sequence numbers: a gap does
+  **not** mean that a packet was lost.
+- **Client packets**: each client has its own counter. The reference client
+  uses one counter for every packet it sends (`ConnectReq`, `PlayerInput`,
+  `Ack`, ...). Only `PlayerInput` gives the number a meaning: the input number
+  (see [section 8](#8-inputs-and-snapshots)).
+- Sequence numbers are 32 bits and **wrap around**. Compare them with
+  "serial number arithmetic":
+
+```text
+isNewer(a, b) = (a - b) mod 2^32 is between 1 and 2^31 - 1
+```
+
+The server uses this rule for `PlayerInput`. The reference client uses it
+for snapshots, `InputAck` (`lastInput`) and per-entity events.
+
+### Reliable packets
+
+These 12 server packets are reliable: `ConnectAck`, `ConnectReject`,
+`RoomListAck`, `RoomCreateAck`, `RoomJoinAck`, `RoomLeaveAck`,
+`SpawnPlayer`, `DestroyEntity`, `SpawnEntity`, `HealthUpdate`,
+`AugmentUpdate`, `ScoreUpdate`.
+
+**Server side (sender):**
+
+1. The packet is sent and kept in a retransmission queue, by
+   (address, port, `sequence`).
+2. When an `Ack` with the same `sequence` comes from that address and port,
+   the packet is removed from the queue.
+3. Otherwise it is sent again, with the same bytes and the same `sequence`.
+   The first wait is **150 ms** and it doubles after each retry, up to
+   **1.2 s**: retries at about 0.15 s, 0.45 s, 1.05 s, 2.25 s and 3.45 s
+   after the first send.
+4. After **5 retries** without an `Ack` (about 4.65 s), the packet is
+   dropped for good. The server does not disconnect the player for this.
+5. When a player leaves or is removed, every packet waiting for its address
+   is dropped.
+
+**Client side (receiver):**
+
+1. For every reliable packet that passes the header checks, send an `Ack`
+   with its `sequence`, **even if it is a duplicate**.
+2. Then drop the packet if its `sequence` was already received. The reference
+   client remembers the last **512** reliable sequence numbers.
+3. Reliable does not mean ordered. Use the rules of
+   [section 7](#7-gameplay-event-packets) for events that arrive in the
+   wrong order.
+
+### Client requests
+
+Client packets are never acknowledged. A client that needs an answer
+repeats the request itself. Every request can be repeated safely:
+
+| Request | Answer that stops the retries | Reference client |
+| --- | --- | --- |
+| `ConnectReq` | `ConnectAck` or `ConnectReject` | Every 0.5 s, up to 8 retries. |
+| `RoomListReq` | `RoomListAck` | Not sent by the reference client. |
+| `RoomCreateReq` | `RoomCreateAck` | Not sent by the reference client. |
+| `RoomJoinReq` | `RoomJoinAck` | Not sent by the reference client. |
+| `RoomLeaveReq` | `RoomLeaveAck` (same answer for 10 s after leaving) | Not sent by the reference client. |
+| `SnapshotRequest` | next `GameStateSyncPacked` | At most every 0.25 s. |
+| `Ping` | `Pong` | Not sent by the reference client. |
+
+`PlayerInput` and `Disconnect` are never repeated: the next input replaces a
+lost one, and a lost `Disconnect` is covered by the 3-second inactivity
+timeout.
+
+### Timeouts
+
+| Timer | Value | Side | Effect |
+| --- | --- | --- | --- |
+| Player inactivity | 3 s without a valid `PlayerInput` | Server | Player removed. |
+| Death | 1.5 s after `health = 0` | Server | Player removed. |
+| Empty room | 30 s with no player | Server | Room deleted (never room 1). |
+| Leave memory | 10 s after `RoomLeaveReq` | Server | Same `RoomLeaveAck` answered again. |
+| Reliable retransmission | 0.15 s to 1.2 s, 5 retries | Server | Packet dropped after about 4.65 s. |
+| Rate-limit memory | 1 min without a packet | Server | Address forgotten by the rate limiter. |
+| `ConnectReq` retry | 0.5 s, 8 retries | Client | Retries stop. |
+| Connection | 5 s (`connect_timeout`) | Client | Error message shown. |
+| Missing snapshot base | 100 ms | Client | `SnapshotRequest` sent. |
+| `SnapshotRequest` | 0.25 s between requests | Client | Next request allowed. |
+
+### Errors
+
+There is no generic error packet. Errors are reported in three ways:
+
+1. **A status code** in an answer: `ConnectReject.reason`
+   ([section 5](#5-connection-packets)), and the `status` of
+   `RoomCreateAck`, `RoomJoinAck` and `RoomLeaveAck`
+   ([section 6](#6-lobby-and-room-packets)).
+2. **Silence**: a packet that breaks a rule of
+   [section 12](#12-size-limits-and-rejection-rules) is dropped without any
+   answer. The server only counts it in its statistics.
+3. **Removal**: a player that stops sending inputs, or dies, is removed
+   without a packet (see [section 10](#10-states-and-transitions)).
 
 ## 12. Size limits and rejection rules
 
-_To be documented: maximum datagram size, queue limits, rate limiting and
-every rule that makes a packet be dropped._
+### Size limits
+
+| Limit | Value | Applies to |
+| --- | --- | --- |
+| Header | 9 bytes | Every packet. |
+| Maximum datagram | **1200 bytes** (header included) | Every packet received by the server; every lobby packet sent by the server. |
+| Maximum payload | 65535 bytes (`payloadSize` is a `u16`) | Format limit; in practice 1191 bytes because of the datagram limit. |
+| Players per room | 4 (`--room-capacity`, 1 to 4) | `RoomCreateReq.capacity`, default room. |
+| Rooms per server | 16 (`--max-rooms`, 1 to 128) | Default room included. |
+| Active entities per room | 48 | Enemies, missiles and bonuses (players not included). New ones are not spawned above it. |
+| Entities in one snapshot | Up to 52 (4 players + 48 entities) | Follows from the two limits above. |
+| Entities in a received snapshot | 256 | Reference client: `count`, `changedCount`, `removedCount`. |
+| Server receive queue | 4096 packets or 4 MiB | Packets received but not processed yet. |
+| Retransmission queue | 4096 packets or 4 MiB, 256 per address | Reliable packets waiting for an `Ack`. |
+| Queued inputs per player | 8 | Oldest input dropped first. |
+| Rate limit | 90 packets per second per address, bursts of 120 | Every packet received by the server. |
+| Rate-limited addresses | 1024 | New addresses above it are dropped. |
+
+With 52 entities, a full snapshot is 9 + 6 + 52 × 12 = 639 bytes, so a
+snapshot always fits in one datagram.
+
+A client sending 60 inputs per second plus its `Ack` packets stays below the
+rate limit in normal play. Each `Ack` counts as one packet, so a client
+should not send anything else at a high rate.
+
+### Rejection rules
+
+The server checks a datagram in this order. The first failing rule drops it,
+**without any answer**:
+
+1. Larger than 1200 bytes, or receive queue full.
+2. Shorter than 9 bytes.
+3. `magic` is not `0x5254`.
+4. `payloadSize` is not exactly `datagram size - 9`.
+5. The sender's address is over the rate limit.
+6. Unknown `type`, or a type the server does not receive (any S → C type).
+7. Wrong payload size for the type (see [section 4](#4-packet-types)).
+8. Payload content invalid: a `bool` other than `0` or `1`, or a field that
+   cannot be read.
+9. For `PlayerInput`, `Disconnect`, `SnapshotRequest`: the sender is in no
+   room, the `netId` does not exist, the `sessionToken` does not match, or
+   the packet comes from another address or port than the player's.
+10. For `PlayerInput`: `sequence` is not newer than the last accepted input.
+
+Requests that are well formed but cannot be served are **answered** with a
+status code instead (full room, unknown room, invalid capacity or difficulty,
+room limit reached: see [section 6](#6-lobby-and-room-packets)).
+
+The reference client drops a datagram, without answer, if:
+
+1. it does not come from the server's **port** (the reference client does not
+   check the address);
+2. it is shorter than 9 bytes, `magic` is wrong, or `payloadSize` does not
+   match the datagram size;
+3. its payload cannot be read (truncated, `bool` other than `0` or `1`);
+4. it is a snapshot with too many entities, a size that does not match
+   `count`, or an invalid delta (see [section 8](#8-inputs-and-snapshots));
+5. it is a duplicate reliable packet (after sending its `Ack`);
+6. it is an `InputAck`, snapshot or event older than the last one applied
+   (see [section 11](#11-sequencing-reliability-timeouts-and-errors)).
+
+An independent client should apply at least rules 1 to 5: they protect
+against corrupted, forged and repeated packets.
 
 ## 13. Packet examples
 
