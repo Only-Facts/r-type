@@ -182,9 +182,19 @@ this order:
 
 1. `SpawnPlayer` + `HealthUpdate` for the new player;
 2. `SpawnPlayer` + `HealthUpdate` for every other player of the room;
-3. `ScoreUpdate` and active `AugmentUpdate` for every player;
-4. `SpawnEntity` (+ `HealthUpdate` for entities with more than 1 HP) for every
+3. `SpawnPlayer` + `HealthUpdate` for the new player **again** (the server
+   announces the new player to every member of the room, the new player
+   included);
+4. `ScoreUpdate` and active `AugmentUpdate` for every player, then the new
+   player's `ScoreUpdate` **again**;
+5. `SpawnEntity` (+ `HealthUpdate` for entities with more than 1 HP) for every
    entity already in the game.
+
+The repeated packets of steps 3 and 4 carry **new** sequence numbers, so the
+duplicate detection of [section 11](#11-sequencing-reliability-timeouts-and-errors)
+does not catch them. A client must handle them as normal packets: a second
+`SpawnPlayer` for an id it already knows is ignored, and a `HealthUpdate` or
+`ScoreUpdate` with the same values changes nothing.
 
 The other players of the room receive `SpawnPlayer`, `HealthUpdate` and
 `ScoreUpdate` for the new player.
@@ -977,4 +987,178 @@ against corrupted, forged and repeated packets.
 
 ## 13. Packet examples
 
-_To be documented: hex dumps generated from the implementation._
+These bytes are produced by the reference client and server, and checked by
+[protocol_examples_test.cpp](../tests/protocol_examples_test.cpp): if the
+implementation changes, that test fails until this section is updated. Run
+`rtype_protocol_examples_test --print` to see the current bytes.
+
+The examples follow one session: a client browses the lobby, then a second
+client connects to the default room, moves right for one step and leaves.
+Bytes are in hexadecimal, in wire order. `xx` stands for the random session
+token, which changes on every run.
+
+### Example: lobby
+
+`RoomListReq`, sequence `1`, empty payload:
+
+```text
+54 52 40 01 00 00 00 00 00
+```
+
+`RoomListAck`, sequence `1`: one room, the default room, empty.
+
+```text
+54 52 41 01 00 00 00 0a 00   header: type 0x41, sequence 1, payload 10
+01 00                        count = 1
+01 00 00 00                  roomId = 1
+00                           players = 0
+04                           capacity = 4
+00                           state = 0 (waiting)
+01                           difficulty = 1 (normal)
+```
+
+`RoomCreateReq`, sequence `2`: 2 players, hard.
+
+```text
+54 52 42 02 00 00 00 02 00   header: type 0x42, sequence 2, payload 2
+02                           capacity = 2
+02                           difficulty = 2 (hard)
+```
+
+`RoomCreateAck`, sequence `2`: room `2` created.
+
+```text
+54 52 43 02 00 00 00 05 00   header: type 0x43, sequence 2, payload 5
+02 00 00 00                  roomId = 2
+00                           status = 0 (success)
+```
+
+`Ping`, sequence `3`, and its `Pong` (the timestamp is copied unchanged):
+
+```text
+54 52 e0 03 00 00 00 08 00   header: type 0xE0, sequence 3, payload 8
+10 7c 2b 3f 9a 01 00 00      timestamp = 0x0000019A3F2B7C10
+
+54 52 e1 03 00 00 00 08 00   header: type 0xE1, sequence 3, payload 8
+10 7c 2b 3f 9a 01 00 00      timestamp = 0x0000019A3F2B7C10
+```
+
+### Example: connection
+
+`ConnectReq`, sequence `1`: difficulty normal, skin `0`.
+
+```text
+54 52 01 01 00 00 00 02 00   header: type 0x01, sequence 1, payload 2
+01                           difficulty = 1
+00                           skin = 0
+```
+
+`ConnectAck`, sequence `4`:
+
+```text
+54 52 02 04 00 00 00 0d 00   header: type 0x02, sequence 4, payload 13
+e8 03 00 00                  netId = 1000
+01                           difficulty = 1
+xx xx xx xx xx xx xx xx      sessionToken (random, never 0)
+```
+
+`SpawnPlayer`, sequence `5`: the local player, since `netId` is the one of
+`ConnectAck`.
+
+```text
+54 52 10 05 00 00 00 0d 00   header: type 0x10, sequence 5, payload 13
+e8 03 00 00                  netId = 1000
+00 00 48 43                  posX = 200.0 (f32 0x43480000)
+00 00 96 43                  posY = 300.0 (f32 0x43960000)
+00                           skin = 0
+```
+
+`HealthUpdate`, sequence `6`:
+
+```text
+54 52 13 06 00 00 00 06 00   header: type 0x13, sequence 6, payload 6
+e8 03 00 00                  netId = 1000
+05                           health = 5
+05                           maxHealth = 5 (normal difficulty)
+```
+
+`ScoreUpdate`, sequence `9` (sequences `7` and `8` are the repeated
+`SpawnPlayer` and `HealthUpdate` described in [section 5](#5-connection-packets)):
+
+```text
+54 52 15 09 00 00 00 08 00   header: type 0x15, sequence 9, payload 8
+e8 03 00 00                  netId = 1000
+00 00 00 00                  score = 0
+```
+
+`Ack` sent by the client for the `ConnectAck` (client sequence `2`):
+
+```text
+54 52 05 02 00 00 00 04 00   header: type 0x05, sequence 2, payload 4
+04 00 00 00                  acknowledged sequence = 4
+```
+
+### Example: snapshots and inputs
+
+`GameStateSyncPacked`, sequence `11`: the first snapshot of the room, with
+only the new player.
+
+```text
+54 52 31 0b 00 00 00 12 00   header: type 0x31, sequence 11, payload 18
+00 00 00 00                  tick = 0
+01 00                        count = 1
+e8 03 00 00                  netId = 1000
+40 06                        posX = 1600 / 8 = 200.0
+60 09                        posY = 2400 / 8 = 300.0
+00 00                        velX = 0
+00 00                        velY = 0
+```
+
+`PlayerInput`, client sequence `3` (the input number): right held.
+
+```text
+54 52 20 03 00 00 00 11 00   header: type 0x20, sequence 3, payload 17
+e8 03 00 00                  netId = 1000
+xx xx xx xx xx xx xx xx      sessionToken
+00                           up = false
+00                           down = false
+00                           left = false
+01                           right = true
+00                           shoot = false
+```
+
+`InputAck`, sequence `12`, after one simulation tick: the player moved
+300 px/s × 1/60 s = 5 px to the right.
+
+```text
+54 52 33 0c 00 00 00 10 00   header: type 0x33, sequence 12, payload 16
+03 00 00 00                  lastInput = 3
+01 00 00 00                  tick = 1
+00 00 4d 43                  posX = 205.0 (f32 0x434D0000)
+00 00 96 43                  posY = 300.0
+```
+
+`GameStateSyncDelta` for the same move (sequence `9` chosen for the example):
+from tick `0` to tick `1`, only `posX` and `velX` changed.
+
+```text
+54 52 32 09 00 00 00 15 00   header: type 0x32, sequence 9, payload 21
+01 00 00 00                  tick = 1
+00 00 00 00                  baseTick = 0
+01 00                        changedCount = 1
+e8 03 00 00                    netId = 1000
+05                             mask = 0x05 (posX | velX)
+68 06                          posX = 1640 / 8 = 205.0
+b0 04                          velX = 1200 / 4 = 300.0
+00 00                        removedCount = 0
+```
+
+### Example: leaving
+
+`Disconnect`, client sequence `4`:
+
+```text
+54 52 03 04 00 00 00 0c 00   header: type 0x03, sequence 4, payload 12
+e8 03 00 00                  netId = 1000
+xx xx xx xx xx xx xx xx      sessionToken
+```

@@ -174,7 +174,8 @@ All keys can be changed in the `[input]` section of `assets/config/client.cfg`.
 More details:
 
 - [docs/client-engine.md](docs/client-engine.md): client engine, ECS, systems, configuration reference
-- [docs/protocol-extension.md](docs/protocol-extension.md): network protocol, packet layouts and game rules
+- [docs/protocol.md](docs/protocol.md): network protocol reference (packets, states, reliability, limits, examples)
+- [docs/protocol-extension.md](docs/protocol-extension.md): why the gameplay packets exist and the game rules
 
 ## Network protocol
 
@@ -198,7 +199,8 @@ sequence number (u32) and payload size (u16).
 | `0x33` | InputAck | server to client | last input applied, tick, confirmed position |
 | `0x34` | SnapshotRequest | client to server | player id, session token: asks for a full state |
 
-The exact byte layout of each packet is described in [docs/protocol-extension.md](docs/protocol-extension.md).
+This table is a summary. The exact byte layout of every packet, including the lobby, `Ack` and `Ping`
+packets, is described in [docs/protocol.md](docs/protocol.md).
 
 ## Project structure
 
