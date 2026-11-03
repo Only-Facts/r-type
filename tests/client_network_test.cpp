@@ -15,9 +15,11 @@ using namespace rtype;
 
 class ClientMockSocket final : public network::INetworkSocket {
 public:
-  void bind(unsigned short = 0) override {}
+  void bind(unsigned short = 0) override { ++binds; }
   void setNonBlocking(bool) override {}
   unsigned short getLocalPort() const override { return 50000; }
+
+  int binds{0};
 
   void send(const network::PacketData& data,
             const network::Endpoint& endpoint) override {
@@ -692,7 +694,6 @@ static void testSessionStatesFollowTheConnection() {
   assert(manager.getDisconnectReason() == DisconnectReason::Left);
   assert(countSent(socket, network::PacketType::Disconnect) == 1);
 
-  // leaving twice sends nothing more, and a late ConnectAck does not reconnect
   manager.disconnect();
   assert(countSent(socket, network::PacketType::Disconnect) == 1);
   socket.enqueue(connectAckPacket(2, 0x1122334455667788ull), server);
@@ -715,7 +716,6 @@ static void testConnectRejectEndsTheSession() {
   assert(manager.getState() == SessionState::Disconnected);
   assert(manager.getDisconnectReason() == DisconnectReason::Rejected);
 
-  // no more ConnectReq once rejected
   const std::size_t sent = countSent(socket, network::PacketType::ConnectReq);
   for (int i = 0; i < 4; ++i) manager.update(0.5f);
   assert(countSent(socket, network::PacketType::ConnectReq) == sent);
@@ -740,6 +740,46 @@ static void testConnectTimesOutAfterEveryRetry() {
   assert(countSent(socket, network::PacketType::ConnectReq) == 9);
 }
 
+static void testLobbyOpensTheSocketWithoutConnecting() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::Lobby);
+  assert(socket.binds == 1);
+  assert(socket.sent.empty());
+  manager.update(0.5f);
+  assert(socket.sent.empty());
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(manager.getState() == SessionState::Connecting);
+  assert(socket.binds == 1);
+  assert(countSent(socket, network::PacketType::ConnectReq) == 1);
+
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::InGame);
+
+  manager.disconnect();
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::Lobby);
+  assert(manager.getDisconnectReason() == DisconnectReason::None);
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(socket.binds == 1);
+
+  ClientMockSocket lobbySocket;
+  client::ClientNetworkManager lobby(lobbySocket, registry);
+  lobby.openLobby("127.0.0.1", 4242);
+  lobby.disconnect();
+  assert(lobby.getState() == SessionState::Disconnected);
+  assert(lobby.getDisconnectReason() == DisconnectReason::Left);
+  assert(lobbySocket.sent.empty());
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -761,5 +801,6 @@ int main() {
   testSessionStatesFollowTheConnection();
   testConnectRejectEndsTheSession();
   testConnectTimesOutAfterEveryRetry();
+  testLobbyOpensTheSocketWithoutConnecting();
   return 0;
 }

@@ -44,20 +44,18 @@ namespace rtype::client {
     };
     using InputAckCallback = std::function<void(const InputAck&)>;
 
-    // Where the client is in the connection flow (protocol.md, section 10).
     enum class SessionState : std::uint8_t {
-      Disconnected,  // no session: before the first connection, or after it ended
-      Lobby,         // talking to the server about rooms, not in a game yet
-      Connecting,    // ConnectReq sent (or room joined), waiting for ConnectAck
-      InGame         // ConnectAck received, inputs and snapshots flow
+      Disconnected,
+      Lobby,
+      Connecting,
+      InGame
     };
 
-    // Why the last session ended, when the state is Disconnected.
     enum class DisconnectReason : std::uint8_t {
-      None,      // no session ended yet
-      Left,      // the client left on its own
-      Rejected,  // the server answered ConnectReject
-      TimedOut   // no ConnectAck after every ConnectReq retry
+      None,
+      Left,
+      Rejected,
+      TimedOut
     };
 
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
@@ -74,13 +72,18 @@ namespace rtype::client {
 
     static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
 
+    void openLobby(const std::string& host, unsigned short port) {
+      if (_state == SessionState::Connecting || _state == SessionState::InGame) return;
+      openSocket(host, port);
+      _state = SessionState::Lobby;
+      _disconnectReason = DisconnectReason::None;
+    }
+
     void connectToServer(const std::string& host, unsigned short port,
                          std::optional<std::uint8_t> difficulty = std::nullopt,
                          std::optional<std::uint8_t> skin = std::nullopt,
                          std::optional<network::NetworkId> previousNetId = std::nullopt) {
-      _serverEndpoint = {host, port};
-      _socket.bind(0);
-      _socket.setNonBlocking(true);
+      openSocket(host, port);
 
       const std::uint16_t payloadSize = previousNetId ? 6 : skin ? 2 : difficulty ? 1 : 0;
       network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++,
@@ -161,7 +164,6 @@ namespace rtype::client {
       return inputSequence;
     }
 
-    // Leaves the game, or stops connecting. Calling it again does nothing.
     void disconnect() {
       if (_state == SessionState::Disconnected) return;
 
@@ -368,7 +370,6 @@ namespace rtype::client {
             difficulty = value;
           }
           if (reader.hasMoreData()) reader >> token;
-          // a late ConnectAck after the client gave up or left starts nothing
           if (token == 0 || (_state != SessionState::Connecting && _state != SessionState::InGame)) return;
           _localNetId = netId;
           if (difficulty) _serverDifficulty = difficulty;
@@ -600,6 +601,14 @@ namespace rtype::client {
       return (static_cast<std::uint64_t>(netId) << 8) | augment;
     }
 
+    void openSocket(const std::string& host, unsigned short port) {
+      _serverEndpoint = {host, port};
+      if (_socketOpen) return;
+      _socket.bind(0);
+      _socket.setNonBlocking(true);
+      _socketOpen = true;
+    }
+
     void endSession(DisconnectReason reason) {
       _connectPacket.clear();
       _sessionToken = 0;
@@ -819,6 +828,7 @@ namespace rtype::client {
     std::size_t _droppedPackets{0};
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
+    bool _socketOpen{false};
     SessionState _state{SessionState::Disconnected};
     DisconnectReason _disconnectReason{DisconnectReason::None};
   };
