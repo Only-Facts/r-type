@@ -192,7 +192,6 @@ namespace rtype::game {
     _difficulty.load(_context.config, "difficulty");
     std::optional<std::uint8_t> skin;
     if (!_skins.empty()) skin = static_cast<std::uint8_t>(_skins.selected(_context.session));
-    // ask for the id of our previous game, so we keep the same player number after a game over
     std::optional<network::NetworkId> previousNetId;
     if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
       previousNetId = static_cast<network::NetworkId>(id);

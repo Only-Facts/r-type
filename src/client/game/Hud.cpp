@@ -95,7 +95,6 @@ namespace rtype::game {
     _centerHint = createText({0.5f, 0.42f}, {0.0f, static_cast<float>(scaled(_settings.bigTextSize))},
                              {0.5f, 0.0f}, scaled(_settings.textSize));
 
-    // boss bar: centered at the top of the screen, name and health above it, notifications below
     const float bossWidth = _settings.bossBarSize.x * _settings.scale;
     const float bossBarY = m + lineHeight * 0.75f;
     _bossName = createText({0.5f, 0.0f}, {0.0f, m}, {0.5f, 0.0f}, scaled(_settings.textSize));

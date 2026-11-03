@@ -951,6 +951,139 @@ static void testJoinRoomFailuresReturnToTheLobby() {
   assert(manager.getDisconnectReason() == DisconnectReason::TimedOut);
 }
 
+static std::size_t countRemoteEntities(engine::Registry& registry) {
+  std::size_t count = 0;
+  registry.each<engine::NetworkIdComponent>([&](engine::Entity, engine::NetworkIdComponent&) { ++count; });
+  return count;
+}
+
+static network::PacketData spawnEntityPacket(std::uint32_t sequence, network::NetworkId netId) {
+  network::PacketStreamWriter payload;
+  payload << netId << std::uint8_t{1} << 500.0f << 300.0f;
+  return makePacket(network::PacketType::SpawnEntity, sequence, payload.getBuffer());
+}
+
+static void joinAndConnect(client::ClientNetworkManager& manager, ClientMockSocket& socket,
+                           std::uint32_t roomId, std::uint32_t sequence, std::uint64_t token) {
+  const network::Endpoint server{"127.0.0.1", 4242};
+  assert(manager.joinRoom("127.0.0.1", 4242, roomId));
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, sequence, roomId, 0), server);
+  socket.enqueue(connectAckPacket(sequence + 1, token), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+}
+
+static void testLeaveRoomCleansTheSession() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::SnapshotClock clock(60.0, 0.1, 0.1);
+  manager.setSnapshotClock(&clock);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> left;
+  std::size_t destroyCallbacks = 0;
+  manager.setOnRoomLeft([&](RoomResult result, std::uint32_t roomId) { left.emplace_back(result, roomId); });
+  manager.setOnEntityDestroyed([&](engine::Entity, network::NetworkId, network::ext::EntityType) {
+    ++destroyCallbacks;
+  });
+
+  assert(!manager.leaveRoom());
+  manager.openLobby("127.0.0.1", 4242);
+  assert(!manager.leaveRoom());
+  joinAndConnect(manager, socket, 5, 100, 0x1111222233334444ull);
+
+  socket.enqueue(spawnEntityPacket(102, 2000), server);
+  socket.enqueue(spawnEntityPacket(103, 2001), server);
+  network::PacketStreamWriter full;
+  full << std::uint32_t{900} << std::uint16_t{1}
+       << network::packEntityState({2000, 500.0f, 300.0f, 0.0f, 0.0f});
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 104, full.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 2);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{900});
+  assert(clock.isSynchronized());
+
+  assert(manager.leaveRoom());
+  assert(manager.getState() == SessionState::Lobby);
+  assert(manager.isLeaving());
+  assert(countRemoteEntities(registry) == 0);
+  assert(destroyCallbacks == 0);
+  assert(!manager.getLastSnapshotTick());
+  assert(!clock.isSynchronized());
+  assert(manager.getLocalNetId() == 0);
+  assert(!manager.sendInputs(false, false, false, true, false));
+  const auto request = lastSent(socket, network::PacketType::RoomLeaveReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 12);
+  assert(request[9] == 0xE8 && request[10] == 0x03);
+  assert(request[13] == 0x44 && request[20] == 0x11);
+
+  const std::size_t acks = countSent(socket, network::PacketType::Ack);
+  socket.enqueue(spawnEntityPacket(105, 2002), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 0);
+  assert(countSent(socket, network::PacketType::Ack) == acks + 1);
+
+  assert(!manager.joinRoom("127.0.0.1", 4242, 6));
+  assert(!manager.connectToServer("127.0.0.1", 4242));
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 2);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomLeaveAck, 106, 5, 0), server);
+  manager.update(0.0f);
+  assert(left.size() == 1 && left[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+  assert(!manager.isLeaving());
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 2);
+
+  joinAndConnect(manager, socket, 6, 102, 0x5555666677778888ull);
+  socket.enqueue(spawnEntityPacket(104, 2000), server);
+  network::PacketStreamWriter restarted;
+  restarted << std::uint32_t{3} << std::uint16_t{1}
+            << network::packEntityState({2000, 700.0f, 200.0f, 0.0f, 0.0f});
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 105, restarted.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 1);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{3});
+  assert(socket.binds == 1);
+}
+
+static void testLeaveRoomTimesOutAndDisconnectCleans() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<RoomResult> left;
+  manager.setOnRoomLeft([&](RoomResult result, std::uint32_t) { left.push_back(result); });
+
+  manager.openLobby("127.0.0.1", 4242);
+  joinAndConnect(manager, socket, 5, 10, 0x0102030405060708ull);
+  manager.leaveRoom();
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(left.size() == 1 && left[0] == RoomResult::TimedOut);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 9);
+  assert(!manager.isLeaving());
+  assert(manager.getState() == SessionState::Lobby);
+
+  joinAndConnect(manager, socket, 5, 20, 0x0102030405060709ull);
+  socket.enqueue(spawnEntityPacket(22, 2000), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 1);
+  manager.disconnect();
+  assert(countRemoteEntities(registry) == 0);
+  assert(manager.getState() == SessionState::Disconnected);
+
+  ClientMockSocket connecting;
+  client::ClientNetworkManager pending(connecting, registry);
+  pending.openLobby("127.0.0.1", 4242);
+  pending.joinRoom("127.0.0.1", 4242, 5);
+  assert(pending.leaveRoom());
+  assert(pending.getState() == SessionState::Lobby);
+  assert(countSent(connecting, network::PacketType::RoomLeaveReq) == 0);
+  const std::size_t joins = countSent(connecting, network::PacketType::RoomJoinReq);
+  pending.update(0.5f);
+  assert(countSent(connecting, network::PacketType::RoomJoinReq) == joins);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -977,5 +1110,7 @@ int main() {
   testRoomCreationResults();
   testJoinRoomConnectsToTheGame();
   testJoinRoomFailuresReturnToTheLobby();
+  testLeaveRoomCleansTheSession();
+  testLeaveRoomTimesOutAndDisconnectCleans();
   return 0;
 }
