@@ -780,6 +780,177 @@ static void testLobbyOpensTheSocketWithoutConnecting() {
   assert(lobbySocket.sent.empty());
 }
 
+using RoomResult = client::ClientNetworkManager::RoomResult;
+using RoomInfo = client::ClientNetworkManager::RoomInfo;
+
+static network::PacketData roomResultPacket(network::PacketType type, std::uint32_t sequence,
+                                            std::uint32_t roomId, std::uint8_t status) {
+  network::PacketStreamWriter payload;
+  payload << roomId << status;
+  return makePacket(type, sequence, payload.getBuffer());
+}
+
+static network::PacketData lastSent(const ClientMockSocket& socket, network::PacketType type) {
+  for (auto it = socket.sent.rbegin(); it != socket.sent.rend(); ++it)
+    if (static_cast<network::PacketType>(it->first.at(2)) == type) return it->first;
+  return {};
+}
+
+static void testRoomListIsRequestedAndRead() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::vector<RoomInfo>>> answers;
+  manager.setOnRoomList([&](RoomResult result, const std::vector<RoomInfo>& rooms) {
+    answers.emplace_back(result, rooms);
+  });
+
+  assert(!manager.requestRooms());
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.requestRooms());
+  const auto request = lastSent(socket, network::PacketType::RoomListReq);
+  assert(request.size() == sizeof(network::PacketHeader));
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 2);
+  assert(lastSent(socket, network::PacketType::RoomListReq) == request);
+
+  network::PacketStreamWriter payload;
+  payload << std::uint16_t{2}
+          << std::uint32_t{1} << std::uint8_t{3} << std::uint8_t{4} << std::uint8_t{1} << std::uint8_t{1}
+          << std::uint32_t{7} << std::uint8_t{2} << std::uint8_t{2} << std::uint8_t{2} << std::uint8_t{2};
+  socket.enqueue(makePacket(network::PacketType::RoomListAck, 30, payload.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countSent(socket, network::PacketType::Ack) == 1);
+  assert(answers.size() == 1 && answers[0].first == RoomResult::Success);
+  assert(answers[0].second.size() == 2);
+  assert(answers[0].second[0].id == 1 && answers[0].second[0].players == 3);
+  assert(answers[0].second[0].capacity == 4 && answers[0].second[0].state == 1);
+  assert(answers[0].second[1].id == 7 && answers[0].second[1].difficulty == 2);
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 2);
+
+  network::PacketStreamWriter truncated;
+  truncated << std::uint16_t{1} << std::uint32_t{1};
+  manager.requestRooms();
+  socket.enqueue(makePacket(network::PacketType::RoomListAck, 31, truncated.getBuffer()), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1);
+
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(answers.size() == 2 && answers[1].first == RoomResult::TimedOut);
+  assert(answers[1].second.empty());
+}
+
+static void testRoomCreationResults() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomCreated([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  assert(!manager.createRoom(2, 2));
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.createRoom(2, 2));
+  const auto request = lastSent(socket, network::PacketType::RoomCreateReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 2);
+  assert(request[9] == 2 && request[10] == 2);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 40, 5, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1 && answers[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 41, 6, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1);
+
+  manager.createRoom(9, 0);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 42, 0, 1), server);
+  manager.update(0.0f);
+  assert(answers.back() == std::make_pair(RoomResult::InvalidSettings, std::uint32_t{0}));
+
+  manager.createRoom(2, 0);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 43, 0, 2), server);
+  manager.update(0.0f);
+  assert(answers.back() == std::make_pair(RoomResult::LimitReached, std::uint32_t{0}));
+  assert(manager.getState() == SessionState::Lobby);
+}
+
+static void testJoinRoomConnectsToTheGame() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomJoined([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.requestRooms();
+  assert(manager.joinRoom("127.0.0.1", 4242, 5, 1, 0));
+  assert(manager.getState() == SessionState::Connecting);
+  assert(socket.binds == 1);
+  const auto request = lastSent(socket, network::PacketType::RoomJoinReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 10);
+  assert(request[9] == 5 && request[13] == 1 && request[14] == 0);
+  assert(request[15] == 0 && request[16] == 0 && request[17] == 0 && request[18] == 0);
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == 2);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 1);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 50, 9, 0), server);
+  manager.update(0.0f);
+  assert(answers.empty());
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 51, 5, 0), server);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 52, 5, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1 && answers[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+  assert(manager.getState() == SessionState::Connecting);
+
+  socket.enqueue(connectAckPacket(53, 0x0A0B0C0D0E0F1011ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  const std::size_t joins = countSent(socket, network::PacketType::RoomJoinReq);
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == joins);
+  assert(!manager.joinRoom("127.0.0.1", 4242, 6));
+}
+
+static void testJoinRoomFailuresReturnToTheLobby() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomJoined([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  const std::pair<std::uint8_t, RoomResult> cases[] = {
+    {1, RoomResult::NotFound}, {2, RoomResult::Full}, {3, RoomResult::AlreadyInRoom}
+  };
+  std::uint32_t sequence = 60;
+  for (const auto& [status, expected] : cases) {
+    manager.openLobby("127.0.0.1", 4242);
+    manager.joinRoom("127.0.0.1", 4242, 8);
+    socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, sequence++, 8, status), server);
+    manager.update(0.0f);
+    assert(answers.back() == std::make_pair(expected, std::uint32_t{8}));
+    assert(manager.getState() == SessionState::Lobby);
+    const std::size_t joins = countSent(socket, network::PacketType::RoomJoinReq);
+    manager.update(0.5f);
+    assert(countSent(socket, network::PacketType::RoomJoinReq) == joins);
+  }
+
+  manager.joinRoom("127.0.0.1", 4242, 8);
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(answers.back() == std::make_pair(RoomResult::TimedOut, std::uint32_t{8}));
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::TimedOut);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -802,5 +973,9 @@ int main() {
   testConnectRejectEndsTheSession();
   testConnectTimesOutAfterEveryRetry();
   testLobbyOpensTheSocketWithoutConnecting();
+  testRoomListIsRequestedAndRead();
+  testRoomCreationResults();
+  testJoinRoomConnectsToTheGame();
+  testJoinRoomFailuresReturnToTheLobby();
   return 0;
 }
