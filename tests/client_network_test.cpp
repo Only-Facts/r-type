@@ -654,6 +654,92 @@ static void testReliableStateUpdatesIgnoreReordering() {
   assert(augmentUpdates.back() == std::make_pair(std::uint8_t{1}, 0));
 }
 
+using SessionState = client::ClientNetworkManager::SessionState;
+using DisconnectReason = client::ClientNetworkManager::DisconnectReason;
+
+static network::PacketData connectAckPacket(std::uint32_t sequence, std::uint64_t token) {
+  network::PacketStreamWriter payload;
+  payload << network::NetworkId{1000} << std::uint8_t{1} << token;
+  return makePacket(network::PacketType::ConnectAck, sequence, payload.getBuffer());
+}
+
+static std::size_t countSent(const ClientMockSocket& socket, network::PacketType type) {
+  std::size_t count = 0;
+  for (const auto& [data, endpoint] : socket.sent)
+    if (static_cast<network::PacketType>(data.at(2)) == type) ++count;
+  return count;
+}
+
+static void testSessionStatesFollowTheConnection() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::None);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(manager.getState() == SessionState::Connecting);
+  assert(!manager.isConnected());
+
+  socket.enqueue(connectAckPacket(1, 0x1122334455667788ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  assert(manager.isConnected());
+
+  manager.disconnect();
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::Left);
+  assert(countSent(socket, network::PacketType::Disconnect) == 1);
+
+  // leaving twice sends nothing more, and a late ConnectAck does not reconnect
+  manager.disconnect();
+  assert(countSent(socket, network::PacketType::Disconnect) == 1);
+  socket.enqueue(connectAckPacket(2, 0x1122334455667788ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(!manager.sendInputs(false, false, false, false, false));
+}
+
+static void testConnectRejectEndsTheSession() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  network::PacketStreamWriter reason;
+  reason << std::uint8_t{1};
+  socket.enqueue(makePacket(network::PacketType::ConnectReject, 1, reason.getBuffer()), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::Rejected);
+
+  // no more ConnectReq once rejected
+  const std::size_t sent = countSent(socket, network::PacketType::ConnectReq);
+  for (int i = 0; i < 4; ++i) manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::ConnectReq) == sent);
+}
+
+static void testConnectTimesOutAfterEveryRetry() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  for (int i = 0; i < 8; ++i) {
+    manager.update(0.5f);
+    assert(manager.getState() == SessionState::Connecting);
+  }
+  assert(countSent(socket, network::PacketType::ConnectReq) == 9);
+
+  manager.update(0.5f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::TimedOut);
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::ConnectReq) == 9);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -672,5 +758,8 @@ int main() {
   testEarlyDeltaWaitsForItsBase();
   testLostBaseRequestsFullSnapshot();
   testReliableStateUpdatesIgnoreReordering();
+  testSessionStatesFollowTheConnection();
+  testConnectRejectEndsTheSession();
+  testConnectTimesOutAfterEveryRetry();
   return 0;
 }
