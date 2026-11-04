@@ -18,6 +18,9 @@ namespace rtype::game {
   class LobbyScene : public engine::AScene {
   public:
     static constexpr const char* SESSION_ROOM = "room";
+    static constexpr const char* SESSION_ROOM_SEEN = "room_seen";
+    static constexpr const char* SESSION_ERROR = "room_error";
+    static constexpr const char* SESSION_ERROR_ROOM = "room_error_id";
 
     explicit LobbyScene(engine::EngineContext& context);
     ~LobbyScene() override;
@@ -46,6 +49,9 @@ namespace rtype::game {
     void confirmCreate();
     void onRoomCreated(RoomResult result, std::uint32_t roomId);
     void refreshPanel();
+    void showJoinError();
+    void showError(const std::string& key, const std::string& fallback, std::uint32_t roomId);
+    void clearError();
     void refreshRows();
     void setStatus(const std::string& key, const std::string& fallback, const engine::Color& color);
     std::string roomLine(const RoomInfo& room) const;
@@ -58,6 +64,7 @@ namespace rtype::game {
     std::vector<engine::Entity> _rows;
     engine::Entity _status{0};
     engine::Entity _panel{0};
+    engine::Entity _error{0};
     engine::Entity _browseHint{0};
     engine::Entity _createHint{0};
     Mode _mode{Mode::Browse};

@@ -71,6 +71,7 @@ namespace rtype::game {
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
       _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
+      _lobbyScene(context.config.getString(SECTION_GAME, "lobby_scene", "lobby")),
       _predictionEnabled(context.config.getBool(SECTION_NETWORK, "prediction", true)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
@@ -197,9 +198,13 @@ namespace rtype::game {
     if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
       previousNetId = static_cast<network::NetworkId>(id);
     const auto difficulty = static_cast<std::uint8_t>(_difficulty.selected(_context.session));
-    if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0)
-      _network.joinRoom(_host, _port, static_cast<std::uint32_t>(room), difficulty, skin, previousNetId);
-    else
+    _network.setOnRoomJoined([this](client::ClientNetworkManager::RoomResult result, std::uint32_t) {
+      if (result != client::ClientNetworkManager::RoomResult::Success) _joinError = result;
+    });
+    if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0) {
+      _roomId = static_cast<std::uint32_t>(room);
+      _network.joinRoom(_host, _port, *_roomId, difficulty, skin, previousNetId);
+    } else
       _network.connectToServer(_host, _port, difficulty, skin, previousNetId);
   }
 
@@ -211,6 +216,7 @@ namespace rtype::game {
     sendFixedStepInputs(dt);
     _snapshotClock.advance(dt);
     _network.update(dt);
+    if (returnToLobbyOnError()) return;
     applyLocalPrediction(dt);
     _hud.update(dt);
     updateConnectionStatus(dt);
@@ -280,6 +286,22 @@ namespace rtype::game {
     const gameplay::MovementVector shown = _prediction.displayed();
     transform->position = {shown.x, shown.y};
     transform->targetPosition = transform->position;
+  }
+
+  bool GameScene::returnToLobbyOnError() {
+    using Network = client::ClientNetworkManager;
+    if (!_joinError && !_wasConnected && _network.getState() == Network::SessionState::Disconnected) {
+      if (_network.getDisconnectReason() == Network::DisconnectReason::Rejected) _joinError = Network::RoomResult::Full;
+      else if (_network.getDisconnectReason() == Network::DisconnectReason::TimedOut)
+        _joinError = Network::RoomResult::TimedOut;
+    }
+    if (!_joinError || !_context.scenes.hasScene(_lobbyScene)) return false;
+    _context.session.setInt(LobbyScene::SESSION_ERROR, static_cast<int>(*_joinError));
+    _context.session.setInt(LobbyScene::SESSION_ERROR_ROOM, static_cast<int>(_roomId.value_or(1)));
+    _context.session.setInt(LobbyScene::SESSION_ROOM, -1);
+    _joinError.reset();
+    _context.scenes.changeScene(_lobbyScene);
+    return true;
   }
 
   void GameScene::updateConnectionStatus(float dt) {

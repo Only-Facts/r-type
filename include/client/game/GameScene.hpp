@@ -52,6 +52,7 @@ namespace rtype::game {
     void applyLocalPrediction(float dt);
     void updateNetworkDebugLine(float dt);
     void sendFixedStepInputs(float dt);
+    bool returnToLobbyOnError();
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -115,6 +116,9 @@ namespace rtype::game {
     float _hitFlashDuration;
     std::string _menuAction;
     std::string _menuScene;
+    std::string _lobbyScene;
+    std::optional<std::uint32_t> _roomId;
+    std::optional<client::ClientNetworkManager::RoomResult> _joinError;
     client::LocalPrediction _prediction;
     bool _predictionEnabled;
   };

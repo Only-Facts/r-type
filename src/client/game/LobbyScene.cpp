@@ -92,6 +92,8 @@ namespace rtype::game {
             readSize(cfg, "title_size", 32), cfg.getColor(SECTION, "title_color", _textColor));
     _status = addText("", cfg.getFloat(SECTION, "status_y", 0.25f), 0.0f, readSize(cfg, "status_size", 14),
                       _dimColor);
+    _error = addText("", cfg.getFloat(SECTION, "error_y", 0.29f), 0.0f, readSize(cfg, "error_size", 14),
+                     _errorColor);
 
     const float listY = cfg.getFloat(SECTION, "list_y", 0.33f);
     const unsigned int rowSize = readSize(cfg, "row_size", 18);
@@ -121,6 +123,7 @@ namespace rtype::game {
                      _selectedColor);
     _createDifficulty = _difficulty.selected(_context.session);
     setMode(Mode::Browse);
+    showJoinError();
 
     setStatus("connecting_text", "Connecting to {host}:{port}...", _dimColor);
     _network.openLobby(_host, _port);
@@ -142,6 +145,7 @@ namespace rtype::game {
     if (_mode == Mode::Creating) return;
     if (actions.isJustPressed(_createAction)) {
       playConfigSound("move_sound");
+      clearError();
       setMode(Mode::Create);
       return;
     }
@@ -183,12 +187,18 @@ namespace rtype::game {
     _selected = static_cast<std::size_t>(((static_cast<int>(_selected) + step) % count + count) % count);
     _selectedId = _rooms[_selected].id;
     playConfigSound("move_sound");
+    clearError();
     refreshRows();
   }
 
   void LobbyScene::joinSelected() {
-    if (_rooms.empty() || _rooms[_selected].state == ROOM_STATE_FULL) {
+    if (_rooms.empty()) {
       playConfigSound("error_sound");
+      return;
+    }
+    if (_rooms[_selected].state == ROOM_STATE_FULL) {
+      playConfigSound("error_sound");
+      showError("error_full_text", "Room {room} is full", _rooms[_selected].id);
       return;
     }
     playConfigSound("confirm_sound");
@@ -197,6 +207,7 @@ namespace rtype::game {
 
   void LobbyScene::joinRoom(std::uint32_t roomId) {
     _context.session.setInt(SESSION_ROOM, static_cast<int>(roomId));
+    _context.session.setInt(SESSION_ROOM_SEEN, 1);
     _context.scenes.changeScene(_nextScene);
   }
 
@@ -241,6 +252,7 @@ namespace rtype::game {
       return;
     }
     playConfigSound("confirm_sound");
+    clearError();
     setMode(Mode::Creating);
     setStatus("creating_text", "Creating the room...", _dimColor);
   }
@@ -253,11 +265,52 @@ namespace rtype::game {
     playConfigSound("error_sound");
     setMode(Mode::Create);
     if (result == RoomResult::LimitReached)
-      setStatus("limit_text", "The server cannot host more rooms", _errorColor);
+      showError("limit_text", "The server cannot host more rooms", 0);
     else if (result == RoomResult::TimedOut)
-      setStatus("no_answer_text", "No answer from {host}:{port}", _errorColor);
+      showError("no_answer_text", "No answer from {host}:{port}", 0);
     else
-      setStatus("create_failed_text", "The server refused this room", _errorColor);
+      showError("create_failed_text", "The server refused this room", 0);
+  }
+
+  void LobbyScene::showJoinError() {
+    engine::Session& session = _context.session;
+    const int code = session.getInt(SESSION_ERROR, -1);
+    if (code < 0) return;
+    const auto roomId = static_cast<std::uint32_t>(std::max(0, session.getInt(SESSION_ERROR_ROOM, 0)));
+    const bool seen = session.getInt(SESSION_ROOM_SEEN, 0) == 1;
+    session.setInt(SESSION_ERROR, -1);
+    session.setInt(SESSION_ROOM_SEEN, 0);
+
+    switch (static_cast<RoomResult>(code)) {
+      case RoomResult::Full:
+        showError("error_full_text", "Room {room} is full", roomId);
+        break;
+      case RoomResult::NotFound:
+        if (seen) showError("error_expired_text", "Room {room} has expired", roomId);
+        else showError("error_not_found_text", "Room {room} does not exist", roomId);
+        break;
+      case RoomResult::AlreadyInRoom:
+        showError("error_busy_text", "Still leaving the previous room, try again", roomId);
+        break;
+      case RoomResult::TimedOut:
+        showError("no_answer_text", "No answer from {host}:{port}", roomId);
+        break;
+      default:
+        showError("error_join_text", "Could not join room {room}", roomId);
+        break;
+    }
+  }
+
+  void LobbyScene::showError(const std::string& key, const std::string& fallback, std::uint32_t roomId) {
+    auto* text = _registry.getComponent<engine::TextComponent>(_error);
+    if (!text) return;
+    text->text = engine::formatTemplate(_context.config.getString(SECTION, key, fallback),
+                                        {{"host", _host}, {"port", std::to_string(_port)},
+                                         {"room", std::to_string(roomId)}});
+  }
+
+  void LobbyScene::clearError() {
+    if (auto* text = _registry.getComponent<engine::TextComponent>(_error)) text->text.clear();
   }
 
   void LobbyScene::refreshPanel() {
