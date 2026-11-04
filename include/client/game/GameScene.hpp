@@ -53,6 +53,8 @@ namespace rtype::game {
     void updateNetworkDebugLine(float dt);
     void sendFixedStepInputs(float dt);
     bool returnToLobbyOnError();
+    void startLeaving();
+    void updateLeaving(float dt);
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -117,6 +119,10 @@ namespace rtype::game {
     std::string _menuAction;
     std::string _menuScene;
     std::string _lobbyScene;
+    std::string _leaveAction;
+    float _leaveTimeout;
+    bool _leaving{false};
+    float _leavingElapsed{0.0f};
     std::optional<std::uint32_t> _roomId;
     std::optional<client::ClientNetworkManager::RoomResult> _joinError;
     client::LocalPrediction _prediction;

@@ -72,6 +72,8 @@ namespace rtype::game {
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
       _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
       _lobbyScene(context.config.getString(SECTION_GAME, "lobby_scene", "lobby")),
+      _leaveAction(context.config.getString(SECTION_GAME, "leave_action", "back")),
+      _leaveTimeout(context.config.getFloat(SECTION_GAME, "leave_timeout", 1.5f)),
       _predictionEnabled(context.config.getBool(SECTION_NETWORK, "prediction", true)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
@@ -204,13 +206,18 @@ namespace rtype::game {
     if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0) {
       _roomId = static_cast<std::uint32_t>(room);
       _network.joinRoom(_host, _port, *_roomId, difficulty, skin, previousNetId);
+      _hud.setStatus("joining_text", {{"room", std::to_string(*_roomId)}}, engine::Color{});
     } else
       _network.connectToServer(_host, _port, difficulty, skin, previousNetId);
   }
 
   void GameScene::onUpdate(float dt) {
-    if (_localDead && _context.actions.isJustPressed(_menuAction)) {
-      _context.scenes.changeScene(_menuScene);
+    if (_leaving) {
+      updateLeaving(dt);
+      return;
+    }
+    if (_context.actions.isJustPressed(_leaveAction) || (_localDead && _context.actions.isJustPressed(_menuAction))) {
+      startLeaving();
       return;
     }
     sendFixedStepInputs(dt);
@@ -286,6 +293,28 @@ namespace rtype::game {
     const gameplay::MovementVector shown = _prediction.displayed();
     transform->position = {shown.x, shown.y};
     transform->targetPosition = transform->position;
+  }
+
+  void GameScene::startLeaving() {
+    _prediction.stop();
+    _hud.clearAugments();
+    if (!_network.leaveRoom()) {
+      _context.scenes.changeScene(_menuScene);
+      return;
+    }
+    _leaving = true;
+    _leavingElapsed = 0.0f;
+    _players.clear();
+    _deadPlayers.clear();
+    _localShip.reset();
+    _hud.setStatus("leaving_text", {}, engine::Color{});
+  }
+
+  void GameScene::updateLeaving(float dt) {
+    _network.update(dt);
+    _hud.update(dt);
+    _leavingElapsed += std::max(dt, 0.0f);
+    if (!_network.isLeaving() || _leavingElapsed >= _leaveTimeout) _context.scenes.changeScene(_menuScene);
   }
 
   bool GameScene::returnToLobbyOnError() {
