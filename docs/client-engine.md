@@ -5,7 +5,8 @@ The client is split in three layers. Each layer only depends on the one below it
 ```
 +-----------------------------------------------------------+
 |  game/            R-Type: TitleScene, SkinScene,          |
-|                   GameScene, StarfieldSpawner, Hud,       |
+|                   LobbyScene, GameScene, Hud,             |
+|                   StarfieldSpawner,                       |
 |                   SkinCatalog, EntityCatalog              |
 |                   asks for assets by id, actions by name  |
 +-----------------------------------------------------------+
@@ -151,8 +152,39 @@ Every `AScene` runs, after its own systems, the built-in `ScreenAnchorSystem`,
 `FollowComponent{target, offset}` keeps an entity glued to another one (the `P1` tag
 above a ship) and destroys it when the target disappears.
 
-Scene flow: `title` (difficulty) -> `skin` (ship) -> `game`. The order is only in the
-config (`[title] next_scene`, `[skin_select] next_scene` / `previous_scene`).
+Scene flow: `title` (difficulty) -> `skin` (ship) -> `lobby` (room) -> `game`. Leaving
+a game, or pressing the menu key after a death, goes back to `lobby`. The order is only
+in the config (`[title] next_scene`, `[skin_select] next_scene` / `previous_scene`,
+`[lobby] next_scene` / `previous_scene`, `[game] menu_scene` / `lobby_scene`).
+
+### Lobby and session states
+
+`LobbyScene` opens its own socket with `ClientNetworkManager::openLobby()`, asks for the
+room list every `[lobby] refresh_interval` seconds and creates rooms. It never joins a
+room itself: it stores the chosen room id in the session (`room`), and `GameScene`
+joins it with `joinRoom()`, because the server knows a player by the socket it plays
+from. When the join fails, `GameScene` stores the reason in the session
+(`room_error`, `room_error_id`) and goes back to the lobby, which shows it.
+
+`ClientNetworkManager::getState()` tells where the client is:
+
+| State | Meaning |
+|-------|---------|
+| `Disconnected` | No session. `getDisconnectReason()` says why the last one ended: `Left`, `Rejected` or `TimedOut` |
+| `Lobby` | Socket open, room requests allowed (`requestRooms`, `createRoom`) |
+| `Connecting` | `ConnectReq` or `RoomJoinReq` sent, waiting for `ConnectAck` |
+| `InGame` | Inputs and snapshots flow |
+
+`leaveRoom()` sends `RoomLeaveReq`, then calls `reset()`: every remote entity is
+destroyed (without destroy sounds) and the session state is forgotten (id, token,
+received sequence numbers, pending events, snapshots, snapshot clock). Gameplay packets
+that arrive after that are ignored, so the client can join another room without
+restarting. The socket is bound only once, so the server always sees the same port.
+
+Room errors shown by the lobby: room full, room expired (it was in the list or was just
+created, but the server no longer knows it), room not found, room limit reached, no
+answer from the server. The server answers "not found" for both missing and expired
+rooms; the lobby tells them apart with the `room_seen` session key.
 
 ### Add a ship skin
 
@@ -287,9 +319,10 @@ Implement `engine::IBackend` (window, input, textures, UDP socket) under
 | `[input]`     | `action = key [key...]` |
 | `[audio]`     | `enabled`, `muted`, `master_volume`, `music_volume`, `sfx_volume` |
 | `[network]`   | `host`, `port`, `interpolation_speed` (local ship without prediction), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `prediction`, `prediction_correction_speed`, `prediction_snap_distance`, `prediction_max_pending_inputs`, `debug_text`, `connect_timeout` |
-| `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
+| `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `menu_action`, `menu_scene`, `lobby_scene`, `leave_action`, `leave_timeout`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
 | `[title]`     | `font`, `title_*`, `subtitle_*`, `prompt_*`, `difficulty_*`, `start_action`, `next_scene`, `music`, `start_sound`, `server_text`, `controls`, `label_<action>` |
 | `[skins]`     | `list`, `default`; one `[skin:<id>]` per ship: `label`, `asset`, `color`. The index in `list` is the value sent on the network |
+| `[lobby]` | `font`, `title_*`, `status_*`, `error_*`, `list_y`, `row_size`, `row_spacing`, `max_rows`, `room_text`, `state_waiting`, `state_running`, `state_full`, `hint_*`, `create_hint_text`, `panel_*`, `max_capacity`, `refresh_interval`, `*_color`, `outline_thickness`, `up_action`, `down_action`, `prev_action`, `next_action`, `start_action`, `back_action`, `create_action`, `next_scene`, `previous_scene`, `*_text` messages, `move_sound`, `confirm_sound`, `back_sound`, `error_sound` |
 | `[skin_select]` | `font`, `title_*`, `label_*`, `hint_*`, `prev_action`, `next_action`, `start_action`, `back_action`, `next_scene`, `previous_scene`, `carousel_y`, `spacing`, `selected_scale`, `other_scale`, `other_alpha`, `outline_thickness`, `dim_color`, `change_sound`, `confirm_sound`, `back_sound` |
 | `[debug]`     | `font`, `text_size`, `color`, `toggle_action`, `visible`, `refresh`, `text` |
 | `[difficulty]` | `levels`, `default`, `label_<level>`, `color_<level>` |

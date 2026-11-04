@@ -130,8 +130,16 @@ snapshots, late snapshots, pending inputs, last correction).
 ## How to play
 
 1. On the title screen, choose the difficulty with Left / Right and press Enter or Space.
-2. Choose your ship with Left / Right and press Enter or Space to start. Backspace goes back to the title screen.
-3. Destroy the Bydos, avoid their missiles and collect the bonuses they drop.
+2. Choose your ship with Left / Right and press Enter or Space. Backspace goes back to the title screen.
+3. In the lobby, choose a room with Up / Down and press Enter to join it. The list shows the players, the free
+   places, the difficulty and the state of every room, and is refreshed every 2 seconds.
+4. To create a room, press C, choose the number of players with Left / Right and the difficulty with Up / Down,
+   then press Enter: you join it right away. Backspace closes the panel, or goes back to the ship selection.
+5. Destroy the Bydos, avoid their missiles and collect the bonuses they drop.
+6. Press Backspace at any time to leave the game and go back to the lobby. After your ship is destroyed, press
+   Enter to go back to the lobby. You can then join another room without restarting the game.
+
+A full, expired or unknown room, or a server that does not answer, is shown in red in the lobby.
 
 | Action | Keys |
 |--------|------|
@@ -139,6 +147,10 @@ snapshots, late snapshots, pending inputs, last correction).
 | Shoot | Space |
 | Mute / unmute | M |
 | Debug overlay | F3 |
+| Choose a room | Up / Down, Z / S |
+| Join a room | Enter |
+| Create a room | C |
+| Leave the game | Backspace |
 | Quit | Escape |
 
 All keys can be changed in the `[input]` section of `assets/config/client.cfg`.
