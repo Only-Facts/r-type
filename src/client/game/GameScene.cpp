@@ -15,6 +15,7 @@
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
 #include "exception.hpp"
+#include "game/LobbyScene.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
@@ -195,8 +196,11 @@ namespace rtype::game {
     std::optional<network::NetworkId> previousNetId;
     if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
       previousNetId = static_cast<network::NetworkId>(id);
-    _network.connectToServer(_host, _port,
-                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin, previousNetId);
+    const auto difficulty = static_cast<std::uint8_t>(_difficulty.selected(_context.session));
+    if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0)
+      _network.joinRoom(_host, _port, static_cast<std::uint32_t>(room), difficulty, skin, previousNetId);
+    else
+      _network.connectToServer(_host, _port, difficulty, skin, previousNetId);
   }
 
   void GameScene::onUpdate(float dt) {
