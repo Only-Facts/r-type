@@ -1142,6 +1142,69 @@ static void testNetStatsCountPacketsAndBytes() {
   assert(stats.packetsSent == socket.sent.size());
 }
 
+static void testNetStatsCountRejectedPacketsByReason() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.openLobby("127.0.0.1", 4242);
+  socket.enqueue(spawnEntityPacket(1, 2000), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::OutsideRoom) == 1);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  socket.enqueue(connectAckPacket(2, 0), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 1);
+  socket.enqueue(connectAckPacket(3, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.isConnected());
+
+  socket.enqueue(spawnEntityPacket(10, 2000), network::Endpoint{"127.0.0.1", 5000});
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::WrongSender) == 1);
+
+  auto badMagic = spawnEntityPacket(11, 2000);
+  badMagic[0] = 0x00;
+  auto badSize = spawnEntityPacket(12, 2000);
+  badSize.push_back(0x00);
+  network::PacketStreamWriter shortHealth;
+  shortHealth << network::NetworkId{2000};
+  socket.enqueue(network::PacketData{0x54, 0x52, 0x13}, server);
+  socket.enqueue(badMagic, server);
+  socket.enqueue(badSize, server);
+  socket.enqueue(makePacket(network::PacketType::HealthUpdate, 13, shortHealth.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 5);
+
+  socket.enqueue(spawnEntityPacket(20, 2000), server);
+  socket.enqueue(spawnEntityPacket(20, 2000), server);
+  socket.enqueue(spawnEntityPacket(21, 2000), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Duplicate) == 2);
+
+  network::PacketStreamWriter score;
+  score << network::NetworkId{1000} << std::uint32_t{500};
+  socket.enqueue(makePacket(network::PacketType::ScoreUpdate, 31, score.getBuffer()), server);
+  socket.enqueue(makePacket(network::PacketType::ScoreUpdate, 30, score.getBuffer()), server);
+  network::PacketStreamWriter inputAck;
+  inputAck << std::uint32_t{0} << std::uint32_t{1} << 200.0f << 300.0f;
+  manager.sendInputs(false, false, false, false, false);
+  network::PacketStreamWriter newerAck;
+  newerAck << std::uint32_t{100} << std::uint32_t{2} << 200.0f << 300.0f;
+  socket.enqueue(makePacket(network::PacketType::InputAck, 32, newerAck.getBuffer()), server);
+  socket.enqueue(makePacket(network::PacketType::InputAck, 33, inputAck.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Stale) == 2);
+
+  assert(stats.rejectedTotal() == 11);
+  assert(manager.getDroppedPacketCount() == 11);
+  assert(stats.packetsReceived == 15);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1172,5 +1235,6 @@ int main() {
   testLeaveRoomTimesOutAndDisconnectCleans();
   testNetStatsStartEmpty();
   testNetStatsCountPacketsAndBytes();
+  testNetStatsCountRejectedPacketsByReason();
   return 0;
 }

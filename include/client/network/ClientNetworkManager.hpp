@@ -296,7 +296,7 @@ namespace rtype::client {
       if (it == _playerSkins.end()) return std::nullopt;
       return it->second;
     }
-    [[nodiscard]] std::size_t getDroppedPacketCount() const { return _droppedPackets; }
+    [[nodiscard]] std::size_t getDroppedPacketCount() const { return static_cast<std::size_t>(_stats.rejectedTotal()); }
     [[nodiscard]] const NetStats& getStats() const { return _stats; }
 
   private:
@@ -352,39 +352,39 @@ namespace rtype::client {
         ++_stats.packetsReceived;
         _stats.bytesReceived += data.size();
         if (sender.port != _serverEndpoint.port) {
-          ++_droppedPackets;
+          _stats.reject(RejectReason::WrongSender);
           continue;
         }
         try {
           handlePacket(data);
         } catch (const RtypeError&) {
-          ++_droppedPackets;
+          _stats.reject(RejectReason::Malformed);
         }
       }
     }
 
     void handlePacket(const network::PacketData& data) {
-      if (data.size() < sizeof(network::PacketHeader)) return;
+      if (data.size() < sizeof(network::PacketHeader)) return reject(RejectReason::Malformed);
 
       network::PacketStreamReader reader(data);
       network::PacketHeader header{};
       reader >> header;
 
       if (header.magic != network::PROTOCOL_MAGIC ||
-          header.payloadSize != data.size() - sizeof(header)) return;
-      if (header.type == network::PacketType::Ack) return;
+          header.payloadSize != data.size() - sizeof(header)) return reject(RejectReason::Malformed);
+      if (header.type == network::PacketType::Ack) return reject(RejectReason::Malformed);
       if (isReliableServerPacket(header.type)) {
         sendAcknowledgement(header.sequence);
-        if (!rememberReliableSequence(header.sequence)) return;
+        if (!rememberReliableSequence(header.sequence)) return reject(RejectReason::Duplicate);
       }
       if (isGameplayPacket(header.type) &&
-          _state != SessionState::Connecting && _state != SessionState::InGame) return;
+          _state != SessionState::Connecting && _state != SessionState::InGame) return reject(RejectReason::OutsideRoom);
       const bool isSync =
         header.type == network::PacketType::GameStateSync ||
         header.type == network::PacketType::GameStateSyncPacked ||
         header.type == network::PacketType::GameStateSyncDelta;
       const bool staleSync = isSync && !isSequenceNewer(header.sequence, _lastSyncSeq, _hasSyncSequence);
-      if (staleSync && header.type == network::PacketType::GameStateSync) return;
+      if (staleSync && header.type == network::PacketType::GameStateSync) return reject(RejectReason::Stale);
 
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
@@ -412,7 +412,7 @@ namespace rtype::client {
         if (it != _networkToEcs.end() && _onAugment) {
           const auto last = _lastAugmentSequences.find(key);
           if (last != _lastAugmentSequences.end() &&
-              !isSequenceNewer(header.sequence, last->second, true)) return;
+              !isSequenceNewer(header.sequence, last->second, true)) return reject(RejectReason::Stale);
           _lastAugmentSequences[key] = header.sequence;
           _pendingAugments.erase(key);
           _onAugment(it->second.entity, netId, it->second.type, augment,
@@ -430,7 +430,7 @@ namespace rtype::client {
       if (header.type == network::PacketType::InputAck) {
         InputAck ack;
         reader >> ack.lastInput >> ack.tick >> ack.x >> ack.y;
-        if (!isConnected() || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return;
+        if (!isConnected() || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return reject(RejectReason::Stale);
         _lastInputAck = ack.lastInput;
         _hasInputAck = true;
         if (_onInputAck) _onInputAck(ack);
@@ -442,7 +442,7 @@ namespace rtype::client {
         reader >> netId >> score;
         const auto last = _lastScoreSequences.find(netId);
         if (last != _lastScoreSequences.end() &&
-            !isSequenceNewer(header.sequence, last->second, true)) return;
+            !isSequenceNewer(header.sequence, last->second, true)) return reject(RejectReason::Stale);
         _lastScoreSequences[netId] = header.sequence;
         if (_onScore) _onScore(netId, score);
         return;
@@ -450,7 +450,7 @@ namespace rtype::client {
 
       switch (header.type) {
         case network::PacketType::ConnectReject:
-          if (_state != SessionState::Connecting) break;
+          if (_state != SessionState::Connecting) return reject(RejectReason::Stale);
           endSession(DisconnectReason::Rejected);
           _pendingPlayerSpawns.clear();
           break;
@@ -465,7 +465,8 @@ namespace rtype::client {
             difficulty = value;
           }
           if (reader.hasMoreData()) reader >> token;
-          if (token == 0 || (_state != SessionState::Connecting && _state != SessionState::InGame)) return;
+          if (token == 0) return reject(RejectReason::Malformed);
+          if (_state != SessionState::Connecting && _state != SessionState::InGame) return reject(RejectReason::Stale);
           _localNetId = netId;
           if (difficulty) _serverDifficulty = difficulty;
           _sessionToken = token;
@@ -502,8 +503,9 @@ namespace rtype::client {
         case network::PacketType::GameStateSync: {
           std::uint16_t count{};
           reader >> count;
-          if (count > MAX_SNAPSHOT_COUNT) return;
-          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::EntityStateData)) return;
+          if (count > MAX_SNAPSHOT_COUNT) return reject(RejectReason::Malformed);
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::EntityStateData))
+            return reject(RejectReason::Malformed);
           for (std::uint16_t i = 0; i < count; ++i) {
             network::EntityStateData state{};
             reader >> state;
@@ -518,8 +520,9 @@ namespace rtype::client {
           std::uint32_t tick{0};
           std::uint16_t count{};
           reader >> tick >> count;
-          if (count > MAX_SNAPSHOT_COUNT) return;
-          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::PackedEntityStateData)) return;
+          if (count > MAX_SNAPSHOT_COUNT) return reject(RejectReason::Malformed);
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::PackedEntityStateData))
+            return reject(RejectReason::Malformed);
           network::SnapshotState state;
           state.reserve(count);
           for (std::uint16_t i = 0; i < count; ++i) {
@@ -542,13 +545,16 @@ namespace rtype::client {
           handleRoomList(reader);
           break;
         case network::PacketType::RoomCreateAck:
-          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomCreate(reader);
+          if (header.payloadSize != ROOM_RESULT_SIZE) return reject(RejectReason::Malformed);
+          handleRoomCreate(reader);
           break;
         case network::PacketType::RoomJoinAck:
-          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomJoin(reader);
+          if (header.payloadSize != ROOM_RESULT_SIZE) return reject(RejectReason::Malformed);
+          handleRoomJoin(reader);
           break;
         case network::PacketType::RoomLeaveAck:
-          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomLeave(reader);
+          if (header.payloadSize != ROOM_RESULT_SIZE) return reject(RejectReason::Malformed);
+          handleRoomLeave(reader);
           break;
         default: break;
       }
@@ -584,7 +590,7 @@ namespace rtype::client {
     }
 
     void handleSnapshotDelta(const network::SnapshotDelta& delta) {
-      if (findSnapshot(delta.tick)) return;
+      if (findSnapshot(delta.tick)) return reject(RejectReason::Stale);
       const network::SnapshotState* base = findSnapshot(delta.baseTick);
       if (!base) {
         ++_unknownBaseDeltas;
@@ -785,10 +791,10 @@ namespace rtype::client {
     }
 
     void handleRoomList(network::PacketStreamReader& reader) {
-      if (!_roomListRequest) return;
+      if (!_roomListRequest) return reject(RejectReason::Stale);
       std::uint16_t count{0};
       reader >> count;
-      if (reader.remaining() != static_cast<std::size_t>(count) * ROOM_ENTRY_SIZE) return;
+      if (reader.remaining() != static_cast<std::size_t>(count) * ROOM_ENTRY_SIZE) return reject(RejectReason::Malformed);
       std::vector<RoomInfo> rooms(count);
       for (auto& room : rooms)
         reader >> room.id >> room.players >> room.capacity >> room.state >> room.difficulty;
@@ -797,7 +803,7 @@ namespace rtype::client {
     }
 
     void handleRoomCreate(network::PacketStreamReader& reader) {
-      if (!_roomCreateRequest) return;
+      if (!_roomCreateRequest) return reject(RejectReason::Stale);
       std::uint32_t roomId{0};
       std::uint8_t status{0};
       reader >> roomId >> status;
@@ -809,10 +815,10 @@ namespace rtype::client {
       std::uint32_t roomId{0};
       std::uint8_t status{0};
       reader >> roomId >> status;
-      if (_state != SessionState::Connecting || !_joinRoomId || *_joinRoomId != roomId) return;
+      if (_state != SessionState::Connecting || !_joinRoomId || *_joinRoomId != roomId) return reject(RejectReason::Stale);
       const RoomResult result = joinResult(status);
       if (result == RoomResult::Success) {
-        if (_joinAccepted) return;
+        if (_joinAccepted) return reject(RejectReason::Stale);
         _joinAccepted = true;
       } else {
         _connectPacket.clear();
@@ -823,7 +829,7 @@ namespace rtype::client {
     }
 
     void handleRoomLeave(network::PacketStreamReader& reader) {
-      if (!_roomLeaveRequest) return;
+      if (!_roomLeaveRequest) return reject(RejectReason::Stale);
       std::uint32_t roomId{0};
       std::uint8_t status{0};
       reader >> roomId >> status;
@@ -858,6 +864,8 @@ namespace rtype::client {
       _socket.setNonBlocking(true);
       _socketOpen = true;
     }
+
+    void reject(RejectReason reason) { _stats.reject(reason); }
 
     void sendToServer(const network::PacketData& packet) {
       _socket.send(packet, _serverEndpoint);
@@ -901,10 +909,10 @@ namespace rtype::client {
                      float x, float y, std::uint32_t sequence) {
       auto tombstone = _destroyedEntities.find(netId);
       if (tombstone != _destroyedEntities.end()) {
-        if (!isSequenceNewer(sequence, tombstone->second, true)) return;
+        if (!isSequenceNewer(sequence, tombstone->second, true)) return reject(RejectReason::Stale);
         _destroyedEntities.erase(tombstone);
       }
-      if (_networkToEcs.find(netId) != _networkToEcs.end()) return;
+      if (_networkToEcs.find(netId) != _networkToEcs.end()) return reject(RejectReason::Duplicate);
 
       auto entity = _registry.createEntity();
       const bool isLocal = type == network::ext::ENTITY_PLAYER &&
@@ -986,7 +994,7 @@ namespace rtype::client {
       }
       const auto last = _lastHealthSequences.find(netId);
       if (last != _lastHealthSequences.end() &&
-          !isSequenceNewer(sequence, last->second, true)) return;
+          !isSequenceNewer(sequence, last->second, true)) return reject(RejectReason::Stale);
       _lastHealthSequences[netId] = sequence;
       const engine::Entity entity = it->second.entity;
       auto* component = _registry.getComponent<engine::HealthComponent>(entity);
@@ -1094,7 +1102,6 @@ namespace rtype::client {
     std::deque<std::pair<std::uint32_t, network::SnapshotState>> _snapshotHistory;
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
-    std::size_t _droppedPackets{0};
     NetStats _stats;
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
