@@ -210,7 +210,7 @@ namespace rtype::client {
             endSession(DisconnectReason::TimedOut);
             if (unansweredJoin && _onRoomJoined) _onRoomJoined(RoomResult::TimedOut, *unansweredJoin);
           } else {
-            _socket.send(_connectPacket, _serverEndpoint);
+            sendToServer(_connectPacket);
             ++_connectAttempts;
             _connectRetryTimer = CONNECT_RETRY_INTERVAL;
           }
@@ -248,7 +248,7 @@ namespace rtype::client {
       network::PacketData packet = finalPacket.getBuffer();
       packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
 
-      _socket.send(packet, _serverEndpoint);
+      sendToServer(packet);
       return inputSequence;
     }
 
@@ -262,7 +262,7 @@ namespace rtype::client {
         };
         network::PacketStreamWriter writer;
         writer << header << _localNetId << _sessionToken;
-        _socket.send(writer.getBuffer(), _serverEndpoint);
+        sendToServer(writer.getBuffer());
       }
       reset();
       endSession(DisconnectReason::Left);
@@ -349,6 +349,8 @@ namespace rtype::client {
       network::Endpoint sender;
 
       while (_socket.receive(data, sender)) {
+        ++_stats.packetsReceived;
+        _stats.bytesReceived += data.size();
         if (sender.port != _serverEndpoint.port) {
           ++_droppedPackets;
           continue;
@@ -642,7 +644,7 @@ namespace rtype::client {
       };
       network::PacketStreamWriter writer;
       writer << header << _localNetId << _sessionToken;
-      _socket.send(writer.getBuffer(), _serverEndpoint);
+      sendToServer(writer.getBuffer());
       _fullRequestCooldown = FULL_REQUEST_INTERVAL;
       ++_fullSnapshotRequests;
     }
@@ -715,7 +717,7 @@ namespace rtype::client {
       _joinRoomId.reset();
       _joinAccepted = false;
       _connectPacket = packet;
-      _socket.send(_connectPacket, _serverEndpoint);
+      sendToServer(_connectPacket);
       _connectRetryTimer = CONNECT_RETRY_INTERVAL;
       _connectAttempts = 0;
       _state = SessionState::Connecting;
@@ -746,7 +748,7 @@ namespace rtype::client {
     void startLobbyRequest(std::optional<LobbyRequest>& request, network::PacketType type,
                            const network::PacketData& payload) {
       request = LobbyRequest{buildPacket(type, payload), CONNECT_RETRY_INTERVAL, 0};
-      _socket.send(request->packet, _serverEndpoint);
+      sendToServer(request->packet);
     }
 
     bool retryLobbyRequest(std::optional<LobbyRequest>& request, float dt) {
@@ -757,7 +759,7 @@ namespace rtype::client {
         request.reset();
         return true;
       }
-      _socket.send(request->packet, _serverEndpoint);
+      sendToServer(request->packet);
       ++request->attempts;
       request->timer = CONNECT_RETRY_INTERVAL;
       return false;
@@ -857,6 +859,12 @@ namespace rtype::client {
       _socketOpen = true;
     }
 
+    void sendToServer(const network::PacketData& packet) {
+      _socket.send(packet, _serverEndpoint);
+      ++_stats.packetsSent;
+      _stats.bytesSent += packet.size();
+    }
+
     void endSession(DisconnectReason reason) {
       _roomListRequest.reset();
       _roomCreateRequest.reset();
@@ -875,7 +883,7 @@ namespace rtype::client {
       };
       network::PacketStreamWriter writer;
       writer << header << acknowledgedSequence;
-      _socket.send(writer.getBuffer(), _serverEndpoint);
+      sendToServer(writer.getBuffer());
     }
 
     bool rememberReliableSequence(std::uint32_t sequence) {

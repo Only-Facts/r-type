@@ -1105,6 +1105,43 @@ static void testNetStatsStartEmpty() {
   assert(counted.rejectedTotal() == 3);
 }
 
+static void testNetStatsCountPacketsAndBytes() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(stats.packetsSent == 1);
+  assert(stats.bytesSent == sizeof(network::PacketHeader) + 2);
+
+  manager.update(0.5f);
+  assert(stats.packetsSent == 2);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2));
+
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(stats.packetsReceived == 1);
+  assert(stats.bytesReceived == sizeof(network::PacketHeader) + 13);
+  assert(stats.packetsSent == 3);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2) + sizeof(network::PacketHeader) + 4);
+
+  manager.sendInputs(false, false, false, true, false);
+  assert(stats.packetsSent == 4);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2) + sizeof(network::PacketHeader) + 4 +
+                            sizeof(network::PacketHeader) + 17);
+
+  socket.enqueue(connectAckPacket(2, 0x0102030405060708ull), network::Endpoint{"127.0.0.1", 5000});
+  socket.enqueue(network::PacketData{0x01, 0x02, 0x03}, server);
+  manager.update(0.0f);
+  assert(stats.packetsReceived == 3);
+  assert(stats.bytesReceived == sizeof(network::PacketHeader) + 13 + sizeof(network::PacketHeader) + 13 + 3);
+  assert(stats.packetsSent == 4);
+
+  assert(stats.packetsSent == socket.sent.size());
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1134,5 +1171,6 @@ int main() {
   testLeaveRoomCleansTheSession();
   testLeaveRoomTimesOutAndDisconnectCleans();
   testNetStatsStartEmpty();
+  testNetStatsCountPacketsAndBytes();
   return 0;
 }
