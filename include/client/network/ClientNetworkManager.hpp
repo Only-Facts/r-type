@@ -7,6 +7,7 @@
 #include "engine/ecs/SnapshotBuffer.hpp"
 #include "exception.hpp"
 #include "network/INetworkSocket.hpp"
+#include "network/NetStats.hpp"
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
 #include "network/SnapshotDelta.hpp"
@@ -296,6 +297,7 @@ namespace rtype::client {
       return it->second;
     }
     [[nodiscard]] std::size_t getDroppedPacketCount() const { return _droppedPackets; }
+    [[nodiscard]] const NetStats& getStats() const { return _stats; }
 
   private:
     struct RemoteEntity {
@@ -1085,6 +1087,7 @@ namespace rtype::client {
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};
+    NetStats _stats;
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
     bool _socketOpen{false};

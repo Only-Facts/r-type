@@ -1084,6 +1084,27 @@ static void testLeaveRoomTimesOutAndDisconnectCleans() {
   assert(countSent(connecting, network::PacketType::RoomJoinReq) == joins);
 }
 
+static void testNetStatsStartEmpty() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const client::NetStats& stats = manager.getStats();
+  assert(stats.packetsSent == 0 && stats.packetsReceived == 0);
+  assert(stats.bytesSent == 0 && stats.bytesReceived == 0);
+  assert(stats.rejectedTotal() == 0);
+  assert(!stats.rttMs && !stats.jitterMs && !stats.lossPercent);
+  assert(stats.retransmissionsSent == 0 && stats.retransmissionsReceived == 0);
+
+  client::NetStats counted;
+  counted.reject(client::RejectReason::Duplicate);
+  counted.reject(client::RejectReason::Duplicate);
+  counted.reject(client::RejectReason::WrongSender);
+  assert(counted.rejectedFor(client::RejectReason::Duplicate) == 2);
+  assert(counted.rejectedFor(client::RejectReason::WrongSender) == 1);
+  assert(counted.rejectedFor(client::RejectReason::Stale) == 0);
+  assert(counted.rejectedTotal() == 3);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1112,5 +1133,6 @@ int main() {
   testJoinRoomFailuresReturnToTheLobby();
   testLeaveRoomCleansTheSession();
   testLeaveRoomTimesOutAndDisconnectCleans();
+  testNetStatsStartEmpty();
   return 0;
 }
