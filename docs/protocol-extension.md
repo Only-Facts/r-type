@@ -36,8 +36,9 @@ Payload size: 13 bytes. Sent to every client when an entity appears, and to a ne
 connected client for every entity already alive (same as `SpawnPlayer` today).
 Players keep using `SpawnPlayer`.
 
-After the spawn, the entity is updated by the existing `GameStateSync` (it is generic:
-`netId, posX, posY, velX, velY`) and removed by the existing `DestroyEntity`.
+After the spawn, the entity is updated by `GameStateSyncPacked` keyframes and
+`GameStateSyncDelta` updates (both carry `netId`, position and velocity), and removed
+by the existing `DestroyEntity`. The snapshot formats are described in section 11.
 
 ### Entity types
 
@@ -62,20 +63,22 @@ warning notification and boss music in `GameScene`.
 The common `PacketType` enum reserves `SpawnEntity = 0x12`, `HealthUpdate = 0x13`,
 `AugmentUpdate = 0x14`, and `ScoreUpdate = 0x15`.
 
-## 2. `PlayerInput` gets a `shoot` byte (client -> server)
+## 2. `PlayerInput` carries a session token and `shoot` byte (client -> server)
 
-| Field  | Type | Description |
-|--------|------|-------------|
-| netId  | u32  | Sender's network id |
-| up     | bool | (unchanged) |
-| down   | bool | (unchanged) |
-| left   | bool | (unchanged) |
-| right  | bool | (unchanged) |
-| shoot  | bool | **new**, true while the fire key is held |
+| Field | Type | Description |
+|---|---:|---|
+| `netId` | `u32` | Sender's network ID |
+| `sessionToken` | `u64` | Capability returned by `ConnectAck` |
+| `up` | `u8` | `0` or `1` |
+| `down` | `u8` | `0` or `1` |
+| `left` | `u8` | `0` or `1` |
+| `right` | `u8` | `0` or `1` |
+| `shoot` | `u8` | `0` or `1`; true while the fire key is held |
 
-The client already sends it. The server validates all five input bytes, applies movement
-and clamps the resulting position, and decides the fire rate (0.25 seconds). The client
-never creates gameplay entities on its own.
+Payload size: 17 bytes. The server validates the endpoint, player ID, session token,
+input sequence and all five boolean bytes before applying input. Diagonal movement is
+normalized to the same speed as horizontal or vertical movement. The server controls
+the fire rate (0.25 seconds); clients never create gameplay entities themselves.
 
 ## 3. New packet: `HealthUpdate` (server -> client), type `0x13`
 
@@ -131,7 +134,7 @@ A player who flew past an enemy (to its right) must never be hit by its shots:
 In every mode `velX` of an enemy missile is negative. Ramming an enemy still hurts,
 wherever the player comes from.
 
-## 5. Difficulty: `ConnectReq` and `ConnectAck` get one byte
+## 5. Difficulty and authenticated connection handshake
 
 The player picks the difficulty on the title screen. The client sends it, the server
 decides and confirms it.
@@ -139,12 +142,14 @@ decides and confirms it.
 | Packet | New field (appended, optional) | Description |
 |--------|-------------------------------|-------------|
 | `ConnectReq` (client -> server) | `difficulty u8` | Requested level: 0 = easy, 1 = normal, 2 = hard. `payloadSize = 1` |
-| `ConnectAck` (server -> client) | `difficulty u8`, after `netId` | Level actually used by the game. `payloadSize = 5` |
+| `ConnectAck` (server -> client) | `difficulty u8`, then `sessionToken u64`, after `netId` | Level actually used by the game and the session capability. `payloadSize = 13` |
 
-The server reads the optional byte and includes the selected difficulty in
-`ConnectAck`. A room uses the first player's requested difficulty unless the room was
-created with a fixed difficulty; later players inherit the room's selected difficulty.
-A client that only reads `netId` remains compatible with the extended `ConnectAck`.
+The server reads the optional byte and includes the selected difficulty and a newly
+generated session token in `ConnectAck`. A room uses the first player's requested
+difficulty unless the room was created with a fixed difficulty; later players inherit
+the room's selected difficulty. A client that only reads `netId` can still parse the
+prefix of the extended `ConnectAck`, but it cannot send authenticated gameplay input
+without understanding the session token.
 
 | Rule | Easy | Normal | Hard |
 |------|------|--------|------|
@@ -275,6 +280,8 @@ existing score HUD.
 
 ## 10. Server implementation notes
 
+- `Disconnect` (`0x03`) carries `netId u32` followed by `sessionToken u64` (12-byte
+  payload), and is accepted only from the endpoint bound to that session.
 - Player IDs and entity IDs use separate counters/ranges.
 - A repeated `ConnectReq` from an already connected endpoint resends the connection
   acknowledgement and current room state instead of creating another player.
@@ -282,9 +289,33 @@ existing score HUD.
   packets sent by different rooms. Each room broadcasts identical snapshot datagrams
   to its own recipients.
 - The server rejects malformed headers and payload lengths before dispatching packets.
-- `GameStateSync` still uses one UDP datagram per snapshot. If entity counts become
-  large enough to approach the path MTU, snapshot splitting/delta baselines need a
-  coordinated client/server protocol extension; they are not silently fragmented here.
+- Snapshot keyframes and deltas each fit in one UDP datagram; the server does not
+  rely on IP fragmentation.
+
+
+## 11. Snapshot keyframes and deltas
+
+The server sends packed entity states using 12-byte records (`netId`, quantized
+position, and quantized velocity). `GameStateSyncPacked` (`0x31`) is a full
+keyframe. `GameStateSyncDelta` (`0x32`) contains only entities whose packed
+state changed since the previous snapshot. Deltas are intentionally unreliable;
+a full keyframe is sent at least every 60 server snapshot updates so packet loss
+cannot leave a client permanently out of sync. Entity creation and destruction
+remain separate reliable events.
+
+Both packet types start with a `u16` state count followed by that many packed
+records. A delta is applied as a set of updates, not as a replacement for the
+client's complete entity list. Clients discard stale snapshot sequence numbers.
+
+## 12. Reliable event delivery
+
+The server reliably transmits connection/lobby responses, entity spawn and
+destruction events, health, augment, and score updates. The receiver responds
+with an `Ack` (`0x05`) whose four-byte payload is the acknowledged packet's
+sequence number. Reliable packets are retried with exponential backoff and a
+bounded retry count; duplicate packets are acknowledged but not applied twice.
+`PlayerInput` and snapshots remain unreliable because newer state supersedes
+older state.
 
 ## Testing
 

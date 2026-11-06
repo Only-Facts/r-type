@@ -17,7 +17,9 @@ are removed after 30 seconds. The maximum room count includes the default room.
 
 ## UDP packet header
 
-All packets use the existing packed 9-byte header:
+All packets use the existing packed 9-byte header. Integral and floating-point
+fields are serialized explicitly in little-endian byte order; they are not sent
+using native structure layout:
 
 | Field | Type | Description |
 |---|---:|---|
@@ -27,11 +29,8 @@ All packets use the existing packed 9-byte header:
 | `payloadSize` | `u16` | Payload size in bytes |
 
 A packet is discarded if the magic is invalid, the payload size does not match
-the datagram length, or a required field is truncated. The fields use the same
-serialization convention as the existing `PacketStreamWriter` implementation.
-That implementation currently writes native-endian values; the Linux and
-Windows targets used by the project are little-endian. A portable explicit
-endianness conversion should be handled as a shared protocol-hardening change.
+the datagram length, or a required field is truncated. The shared stream reader
+and writer encode all scalar fields explicitly in little-endian order.
 
 ## Lobby packet types
 
@@ -102,10 +101,13 @@ the success response and connection acknowledgement.
 | Field | Type | Description |
 |---|---:|---|
 | `playerId` | `u32` | Player ID assigned by `ConnectAck` |
+| `sessionToken` | `u64` | Session capability returned by `ConnectAck` |
 
-The endpoint and player ID must both match the active session. A repeated leave
-request returns status `1` because that session is no longer active. `Disconnect`
-(`0x03`) remains supported for clients using the original protocol.
+The payload is 12 bytes. Both the endpoint, player ID, and session token must
+match the active session. Repeating the same leave request for ten seconds
+returns success, making a lost `RoomLeaveAck` safe to retry. `Disconnect`
+(`0x03`) remains supported for clients using the original protocol; its payload
+also contains the player ID and session token.
 
 ### `RoomLeaveAck` — `0x47` (server to client)
 
@@ -132,12 +134,32 @@ The server exposes these command-line settings:
 
 - `--port <n>`: UDP listen port (default `4242`).
 - `--max-rooms <n>`: maximum simultaneous rooms, including room `1` (default
-  `16`, allowed range `1..256`).
+  `16`, allowed range `1..128`).
 - `--room-capacity <n>`: default room capacity (default `4`, allowed range
   `1..4`).
 
 User-created room capacity is selected in `RoomCreateReq` and cannot exceed
 four players, matching the current game client/gameplay model.
+
+## Reliable UDP events
+
+The server retransmits state-changing/control packets until the receiving client
+acknowledges the packet sequence. When a player leaves or times out, the server
+also removes any projectiles owned by that player and reliably destroys those
+projectiles for the remaining room members. An `Ack` packet (`0x05`) carries the
+acknowledged server sequence as a `u32` payload. Pending packets are scoped to
+the destination IP/port, bounded globally and per endpoint, and retried with
+exponential backoff (150 ms initial timeout, capped at 1.2 s, five retries).
+Expired packets are dropped and exposed through server metrics. Repeated
+reliable packets are acknowledged by the client but applied only once. Health,
+score and augment updates also use per-entity sequence checks, so a delayed older
+event cannot overwrite a newer value when UDP delivers packets out of order.
+
+Connection, lobby responses, entity spawn/destruction, health, augment, and score
+updates use this path. Continuous input and state snapshots are intentionally
+unreliable; a newer input/snapshot supersedes an older one. This is a delivery
+mechanism, not encryption or protection against a network attacker able to
+spoof a client's UDP endpoint.
 
 ## Running the server tests
 
