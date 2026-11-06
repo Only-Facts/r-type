@@ -15,7 +15,16 @@ namespace rtype::network {
     GameStateSync = 0x30,
     Ping = 0xE0,
     Disconnect = 0x03,
-    Pong = 0xE1
+    ConnectReject = 0x04,
+    Pong = 0xE1,
+    RoomListReq = 0x40,
+    RoomListAck = 0x41,
+    RoomCreateReq = 0x42,
+    RoomCreateAck = 0x43,
+    RoomJoinReq = 0x44,
+    RoomJoinAck = 0x45,
+    RoomLeaveReq = 0x46,
+    RoomLeaveAck = 0x47
   };
 
   #pragma pack(push, 1)
