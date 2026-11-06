@@ -16,114 +16,172 @@ endif()
 
 project(r-type LANGUAGES CXX)
 
+option(RTYPE_BUILD_APPLICATIONS "Build the R-Type client and server" ON)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# CPM.cmake
+if(RTYPE_BUILD_APPLICATIONS)
+  # CPM.cmake
 
-set(CPM_DOWNLOAD_VERSION 0.40.2)
-set(
-  CPM_DOWNLOAD_LOCATION
-  "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake"
-)
-
-if(NOT EXISTS "${CPM_DOWNLOAD_LOCATION}")
-  message(STATUS "Downloading CPM.cmake v${CPM_DOWNLOAD_VERSION}")
-  file(DOWNLOAD
-    "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
-    "${CPM_DOWNLOAD_LOCATION}"
-    STATUS CPM_DOWNLOAD_STATUS
+  set(CPM_DOWNLOAD_VERSION 0.40.2)
+  set(
+    CPM_DOWNLOAD_LOCATION
+    "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake"
   )
-  list(GET CPM_DOWNLOAD_STATUS 0 CPM_DOWNLOAD_ERROR_CODE)
-  if(NOT CPM_DOWNLOAD_ERROR_CODE EQUAL 0)
-    file(REMOVE "${CPM_DOWNLOAD_LOCATION}")
-    message(FATAL_ERROR "Could not download CPM.cmake: ${CPM_DOWNLOAD_STATUS}")
+
+  if(NOT EXISTS "${CPM_DOWNLOAD_LOCATION}")
+    message(STATUS "Downloading CPM.cmake v${CPM_DOWNLOAD_VERSION}")
+    file(DOWNLOAD
+      "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
+      "${CPM_DOWNLOAD_LOCATION}"
+      STATUS CPM_DOWNLOAD_STATUS
+    )
+    list(GET CPM_DOWNLOAD_STATUS 0 CPM_DOWNLOAD_ERROR_CODE)
+    if(NOT CPM_DOWNLOAD_ERROR_CODE EQUAL 0)
+      file(REMOVE "${CPM_DOWNLOAD_LOCATION}")
+      message(FATAL_ERROR "Could not download CPM.cmake: ${CPM_DOWNLOAD_STATUS}")
+    endif()
   endif()
+
+  include("${CPM_DOWNLOAD_LOCATION}")
+
+  # SFML VIA CPM
+
+  CPMAddPackage(
+    NAME SFML
+    GITHUB_REPOSITORY SFML/SFML
+    GIT_TAG 3.1.0
+    GIT_SHALLOW ON
+    OPTIONS
+      "BUILD_SHARED_LIBS OFF"
+      "SFML_USE_SYSTEM_DEPS OFF"
+      "SFML_BUILD_AUDIO ON"
+      "SFML_BUILD_EXAMPLES OFF"
+      "SFML_BUILD_DOC OFF"
+      "SFML_BUILD_TEST_SUITE OFF"
+  )
+
 endif()
-
-include("${CPM_DOWNLOAD_LOCATION}")
-
-# SFML VIA CPM
-
-CPMAddPackage(
-  NAME SFML
-  GITHUB_REPOSITORY SFML/SFML
-  GIT_TAG 3.1.0
-  GIT_SHALLOW ON
-  OPTIONS
-    "BUILD_SHARED_LIBS OFF"
-    "SFML_USE_SYSTEM_DEPS OFF"
-    "SFML_BUILD_AUDIO ON"
-    "SFML_BUILD_EXAMPLES OFF"
-    "SFML_BUILD_DOC OFF"
-    "SFML_BUILD_TEST_SUITE OFF"
-)
 
 # FLAGS
 
 add_compile_options(-Wall -Wextra -Werror -g)
 
-# SRC
+# THREADS
 
-file(GLOB_RECURSE SRC_COMMON "src/common/*.cpp")
-file(GLOB_RECURSE SRC_SERVER "src/server/*.cpp")
-file(GLOB_RECURSE SRC_CLIENT "src/client/*.cpp")
+find_package(Threads REQUIRED)
 
-# EXE
+if(RTYPE_BUILD_APPLICATIONS)
+  # SRC
 
-if(WIN32)
-  if(UNIX)
-    execute_process(
-      COMMAND ${CMAKE_COMMAND} -E create_symlink
-        "/usr/x86_64-w64-mingw32/lib/libcrypt32.a"
-        "${CMAKE_BINARY_DIR}/libCrypt32.a"
-    )
-    execute_process(
-      COMMAND ${CMAKE_COMMAND} -E create_symlink
-        "/usr/x86_64-w64-mingw32/lib/libdnsapi.a"
-        "${CMAKE_BINARY_DIR}/libDnsapi.a"
-    )
-    link_directories("${CMAKE_BINARY_DIR}")
+  file(GLOB_RECURSE SRC_COMMON "src/common/*.cpp")
+  file(GLOB_RECURSE SRC_SERVER "src/server/*.cpp")
+  file(GLOB_RECURSE SRC_CLIENT "src/client/*.cpp")
+
+  # EXE
+
+  if(WIN32)
+    if(UNIX)
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+          "/usr/x86_64-w64-mingw32/lib/libcrypt32.a"
+          "${CMAKE_BINARY_DIR}/libCrypt32.a"
+      )
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+          "/usr/x86_64-w64-mingw32/lib/libdnsapi.a"
+          "${CMAKE_BINARY_DIR}/libDnsapi.a"
+      )
+      link_directories("${CMAKE_BINARY_DIR}")
+    endif()
   endif()
+
+  add_executable(r-type_server ${SRC_COMMON} ${SRC_SERVER})
+  add_executable(r-type_client ${SRC_COMMON} ${SRC_CLIENT})
+
+  if(WIN32)
+    set_target_properties(r-type_server PROPERTIES SUFFIX ".exe")
+    set_target_properties(r-type_client PROPERTIES SUFFIX ".exe")
+
+    target_link_options(r-type_server PRIVATE -static-libgcc -static-libstdc++)
+    target_link_options(r-type_client PRIVATE -static-libgcc -static-libstdc++)
+  endif()
+
+  # INCLUDE
+
+  include_directories("include/common/")
+  target_include_directories(r-type_server PRIVATE "include/server/")
+  target_include_directories(r-type_client PRIVATE "include/client/")
+
+  # LINK
+
+  target_link_libraries(r-type_server PRIVATE
+    SFML::System
+    SFML::Network
+    Threads::Threads
+  )
+
+  target_link_libraries(r-type_client PRIVATE
+    SFML::Audio
+    SFML::Graphics
+    SFML::Window
+    SFML::System
+    SFML::Network
+  )
+
+  if(WIN32)
+    target_link_libraries(r-type_server PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
+    target_link_libraries(r-type_client PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
+  endif()
+
+  add_custom_command(TARGET r-type_client POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:r-type_client>/assets)
+
 endif()
 
-add_executable(r-type_server ${SRC_COMMON} ${SRC_SERVER})
-add_executable(r-type_client ${SRC_COMMON} ${SRC_CLIENT})
+# TESTS
 
-if(WIN32)
-  set_target_properties(r-type_server PROPERTIES SUFFIX ".exe")
-  set_target_properties(r-type_client PROPERTIES SUFFIX ".exe")
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(rtype_server_rooms_test tests/server_rooms_test.cpp)
+  target_include_directories(rtype_server_rooms_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_rooms_test PRIVATE Threads::Threads)
+  add_test(NAME server_rooms COMMAND rtype_server_rooms_test)
 
-  target_link_options(r-type_server PRIVATE -static-libgcc -static-libstdc++)
-  target_link_options(r-type_client PRIVATE -static-libgcc -static-libstdc++)
+  add_executable(rtype_server_gameplay_test tests/server_gameplay_test.cpp)
+  target_include_directories(rtype_server_gameplay_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_gameplay_test PRIVATE Threads::Threads)
+  add_test(NAME server_gameplay COMMAND rtype_server_gameplay_test)
+
+  add_executable(rtype_server_protocol_test tests/server_protocol_test.cpp)
+  target_include_directories(rtype_server_protocol_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_protocol_test PRIVATE Threads::Threads)
+  add_test(NAME server_protocol COMMAND rtype_server_protocol_test)
+
+  add_executable(rtype_client_network_test tests/client_network_test.cpp)
+  target_include_directories(rtype_client_network_test PRIVATE
+    "include/client"
+    "include/common"
+  )
+  target_link_libraries(rtype_client_network_test PRIVATE Threads::Threads)
+  add_test(NAME client_network COMMAND rtype_client_network_test)
+
+  add_executable(rtype_server_stress_test tests/server_stress_test.cpp)
+  target_include_directories(rtype_server_stress_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_stress_test PRIVATE Threads::Threads)
+  add_test(NAME server_stress COMMAND rtype_server_stress_test)
 endif()
-
-# INCLUDE
-
-include_directories("include/common/")
-target_include_directories(r-type_server PRIVATE "include/server/")
-target_include_directories(r-type_client PRIVATE "include/client/")
-
-# LINK
-
-target_link_libraries(r-type_server PRIVATE
-  SFML::System
-  SFML::Network
-)
-
-target_link_libraries(r-type_client PRIVATE
-  SFML::Audio
-  SFML::Graphics
-  SFML::Window
-  SFML::System
-  SFML::Network
-)
-
-if(WIN32)
-  target_link_libraries(r-type_server PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
-  target_link_libraries(r-type_client PRIVATE crypt32 dnsapi ws2_32 iphlpapi)
-endif()
-
-add_custom_command(TARGET r-type_client POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:r-type_client>/assets)

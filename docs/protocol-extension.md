@@ -1,12 +1,14 @@
-# Protocol extension proposal: typed entities, shooting, health, difficulty and augments
+# Gameplay protocol: entities, shooting, health, difficulty, augments and score
 
-Status: proposal from the client side, implemented in the client and in
-`tools/mock_server.py`, not yet in the server.
+Status: implemented by the authoritative server in `include/server/GameRoom.hpp`
+and consumed by `include/client/network/ClientNetworkManager.hpp`. The client-side
+asset/configuration files are not part of the supplied source archive; a boss visual
+profile must therefore be configured by the game distribution (see the boss section).
 
-Summary: one new packet to show enemies and missiles (`SpawnEntity`), one to show
-health (`HealthUpdate`), one optional byte to shoot (`PlayerInput`), one optional byte to
-choose the difficulty (`ConnectReq` / `ConnectAck`), one to show augments (`AugmentUpdate`). Fully backward compatible with the
-current protocol (`common/network/Protocol.hpp`).
+The protocol defines packets for entity spawns (`SpawnEntity`), health
+(`HealthUpdate`), temporary augments (`AugmentUpdate`) and score (`ScoreUpdate`).
+The server remains authoritative: clients send inputs and render the state decided by
+the server.
 
 ## Why
 
@@ -34,8 +36,9 @@ Payload size: 13 bytes. Sent to every client when an entity appears, and to a ne
 connected client for every entity already alive (same as `SpawnPlayer` today).
 Players keep using `SpawnPlayer`.
 
-After the spawn, the entity is updated by the existing `GameStateSync` (it is generic:
-`netId, posX, posY, velX, velY`) and removed by the existing `DestroyEntity`.
+After the spawn, the entity is updated by `GameStateSyncPacked` keyframes and
+`GameStateSyncDelta` updates (both carry `netId`, position and velocity), and removed
+by the existing `DestroyEntity`. The snapshot formats are described in section 11.
 
 ### Entity types
 
@@ -50,34 +53,32 @@ After the spawn, the entity is updated by the existing `GameStateSync` (it is ge
 | 6  | Bonus: heal | `pickup_heal` |
 | 7  | Bonus: damage up | `pickup_damage` |
 | 8  | Player missile, damage boosted (bigger sprite) | `player_missile_heavy` |
+| 9  | Stage boss | `boss` (set `boss = true` in its entity profile) |
 
-New ids need no client code: one line in `[entity_types]` and one `[entity:<name>]`
-section (sprite, depth, sounds).
+New ids need no networking code on the client: add one line in `[entity_types]`
+and one `[entity:<name>]` section (sprite, depth, sounds). For the boss, configure
+entity type `9` and set `boss = true`; this flag activates the boss health bar,
+warning notification and boss music in `GameScene`.
 
-Suggested server-side enum, to add to `Protocol.hpp`:
+The common `PacketType` enum reserves `SpawnEntity = 0x12`, `HealthUpdate = 0x13`,
+`AugmentUpdate = 0x14`, and `ScoreUpdate = 0x15`.
 
-```cpp
-enum class EntityType : std::uint8_t { Player = 0, BydosSlave = 1, PlayerMissile = 2, EnemyMissile = 3 };
-// in PacketType:
-SpawnEntity = 0x12,
-```
+## 2. `PlayerInput` carries a session token and `shoot` byte (client -> server)
 
-## 2. `PlayerInput` gets a `shoot` byte (client -> server)
+| Field | Type | Description |
+|---|---:|---|
+| `netId` | `u32` | Sender's network ID |
+| `sessionToken` | `u64` | Capability returned by `ConnectAck` |
+| `up` | `u8` | `0` or `1` |
+| `down` | `u8` | `0` or `1` |
+| `left` | `u8` | `0` or `1` |
+| `right` | `u8` | `0` or `1` |
+| `shoot` | `u8` | `0` or `1`; true while the fire key is held |
 
-| Field  | Type | Description |
-|--------|------|-------------|
-| netId  | u32  | Sender's network id |
-| up     | bool | (unchanged) |
-| down   | bool | (unchanged) |
-| left   | bool | (unchanged) |
-| right  | bool | (unchanged) |
-| shoot  | bool | **new**, true while the fire key is held |
-
-The client already sends it. The current server reads the first 4 bools and ignores
-the rest, so nothing breaks. To use it: `reader >> netId >> up >> down >> left >> right;`
-then `bool shoot = false; if (reader.hasMoreData()) reader >> shoot;`.
-The server decides the fire rate (cooldown) and spawns the missile: the client never
-creates gameplay entities on its own.
+Payload size: 17 bytes. The server validates the endpoint, player ID, session token,
+input sequence and all five boolean bytes before applying input. Diagonal movement is
+normalized to the same speed as horizontal or vertical movement. The server controls
+the fire rate (0.25 seconds); clients never create gameplay entities themselves.
 
 ## 3. New packet: `HealthUpdate` (server -> client), type `0x13`
 
@@ -100,25 +101,26 @@ under 30%), red flash and hit sound on any entity that loses health, "Player N w
 destroyed" for other players, and a "DESTROYED" screen for the local player (it then
 sends neutral inputs only, to stay connected).
 
-## 4. Game logic expected on the server
+## 4. Authoritative game logic
 
-The subject requires the server to be authoritative: every gameplay decision below is
-made by the server, the client only displays the result.
+The server owns positions, collisions, health, death, damage, drops, score and stage
+progression. Clients only submit player inputs and render the state and events they
+receive.
 
-| Rule | Suggested value |
+| Rule | Server behavior |
 |------|-----------------|
-| Player health | 5 (see difficulty table) |
-| Bydos slave health | 2 (see difficulty table) |
-| Player missile hits a Bydos | Bydos -1 HP, missile destroyed |
-| Enemy missile hits a player | Player -1 HP, missile destroyed |
-| Player rams a Bydos | Player -1 HP, Bydos destroyed |
-| Fire rate | 1 missile every 0.25 s while `shoot` is held |
-| Dead player | ignores inputs, removed after ~1.5 s |
-| Off-screen missile or enemy | `DestroyEntity` |
+| Player health | Easy 8, normal 5, hard 4 |
+| Bydos health | Easy 1, normal 2, hard 3; increases by one every three completed stages, capped at 8 |
+| Player missile hits Bydos/boss | Apply the missile's damage, destroy the missile, update target health |
+| Enemy missile hits player | Player -1 HP, missile destroyed |
+| Player rams Bydos | Player -1 HP, Bydos destroyed; no score |
+| Fire rate | One trigger every 0.25 seconds while `shoot` is held |
+| Dead player | Ignores movement/fire, loses active augments and is removed after 1.5 seconds |
+| Off-screen missile, enemy or bonus | `DestroyEntity` |
+| Player bounds | Server clamps player position to the 1920x1080 game area |
 
-Collisions can use axis-aligned boxes (sprite sizes: player 33x17, Bydos 33x33,
-missile 16x4). `tools/mock_server.py` implements all of this in about 60 lines
-(`damage()`, `collisions()`, `update()`) and can serve as a reference.
+Collisions use axis-aligned bounds. The server also applies a short hit cooldown so a
+player overlapping a boss or projectile is not damaged on every simulation tick.
 
 ### Enemy fire direction
 
@@ -132,7 +134,7 @@ A player who flew past an enemy (to its right) must never be hit by its shots:
 In every mode `velX` of an enemy missile is negative. Ramming an enemy still hurts,
 wherever the player comes from.
 
-## 5. Difficulty: `ConnectReq` and `ConnectAck` get one byte
+## 5. Difficulty and authenticated connection handshake
 
 The player picks the difficulty on the title screen. The client sends it, the server
 decides and confirms it.
@@ -140,15 +142,14 @@ decides and confirms it.
 | Packet | New field (appended, optional) | Description |
 |--------|-------------------------------|-------------|
 | `ConnectReq` (client -> server) | `difficulty u8` | Requested level: 0 = easy, 1 = normal, 2 = hard. `payloadSize = 1` |
-| `ConnectAck` (server -> client) | `difficulty u8`, after `netId` | Level actually used by the game. `payloadSize = 5` |
+| `ConnectAck` (server -> client) | `difficulty u8`, then `sessionToken u64`, after `netId` | Level actually used by the game and the session capability. `payloadSize = 13` |
 
-Backward compatible both ways: the current server never reads the `ConnectReq`
-payload, and a client that does not know the byte only reads `netId`. When the
-`ConnectAck` has no difficulty byte, the client simply does not show any difficulty.
-
-Suggested server rule: the first player who joins an empty game chooses; the players
-who join later get the level already in use (it is shared by the 4 players). A command
-line option such as `--difficulty hard` can force it.
+The server reads the optional byte and includes the selected difficulty and a newly
+generated session token in `ConnectAck`. A room uses the first player's requested
+difficulty unless the room was created with a fixed difficulty; later players inherit
+the room's selected difficulty. A client that only reads `netId` can still parse the
+prefix of the extended `ConnectAck`, but it cannot send authenticated gameplay input
+without understanding the session token.
 
 | Rule | Easy | Normal | Hard |
 |------|------|--------|------|
@@ -190,7 +191,7 @@ What the client shows: the local player's active augments under the health bar w
 countdown ("Triple shot 8s", "Damage x2 10s"), a floating label above the ship of any
 player who picks one up, "+2 HP" above a healed ship, and sounds on gain and end.
 
-### Augment rules expected on the server
+### Augment rules implemented on the server
 
 | Rule | Suggested value |
 |------|-----------------|
@@ -202,7 +203,13 @@ player who picks one up, "+2 HP" above a healed ship, and sounds on gain and end
 | Triple shot (augment 2) | 3 missiles in a fan (-8, 0, +8 degrees), 10 s, replaces double shot |
 | Double shot while triple is active | refreshes the triple shot instead (never downgrade) |
 | Damage up (augment 3) | stacks up to level 2, each pickup refreshes 10 s; missiles deal 1 + level damage and use type 8 |
-| Death | every augment of the player ends (`remaining = 0`) |
+| Death | every active augment of the player ends (`remaining = 0`) |
+
+Double-shot creates two parallel projectiles. Triple-shot creates three projectiles in
+a fan at -8, 0 and +8 degrees. A triple-shot pickup replaces double shot; a double-shot
+pickup while triple shot is active only refreshes the triple-shot duration. Damage-up
+and shot-pattern augments have independent timers. The server sends a zero-remaining
+`AugmentUpdate` when an effect expires or the player dies.
 
 ## 7. Skins: `ConnectReq` and `SpawnPlayer` get one byte
 
@@ -228,66 +235,93 @@ reconnects, the client appends the id it had in its previous game:
 |--------|-------------------------------|-------------|
 | `ConnectReq` (client -> server) | `previousNetId u32`, after `skin` | Id of the client's previous game. `payloadSize = 6`; `difficulty` and `skin` are then always present (`0xFF` = no preference) |
 
-Suggested server rule: if no connected player uses this id, give it back in `ConnectAck`;
-otherwise give a new id as usual. New players keep getting new ids, so a returning player
-finds its number free. The client sends `Disconnect` when it leaves a game, so the id is
-free right away.
+The server restores `previousNetId` when that ID is not already used in the room;
+otherwise it allocates another player ID. The server relays the skin byte in every
+`SpawnPlayer`. A skin value of `0xFF` means no preference. Unknown indices are retained
+as metadata; the client falls back to its configured default appearance.
 
-Backward compatible both ways: the current server ignores the `ConnectReq` payload and
-sends `SpawnPlayer` without the byte. In that case the local player still sees his own
-ship, and the other players are drawn with the default look (`player_1` to `player_4`).
-An unknown skin index is ignored the same way.
+## 8. Stage progression and boss
 
-Server side, this is the whole change:
+A room starts at stage 1. After ten Bydos are eliminated during the current stage,
+the server stops regular Bydos spawning, removes any remaining regular Bydos and
+spawns one boss as entity type `9`. The boss is a normal synchronized entity, with
+`SpawnEntity`, `GameStateSync`, `HealthUpdate` and `DestroyEntity` updates.
 
-```cpp
-std::uint8_t skin = 0xFF;
-if (header.payloadSize >= 2) { std::uint8_t difficulty; reader >> difficulty >> skin; }
-client.skin = skin;
-// in every SpawnPlayer: writer << header << netId << posX << posY << client.skin;
+Boss health scales with room size, difficulty and stage:
+
+```text
+boss_hp = 45 + (players * 8) + (stage * 12) + (difficulty * 12)
 ```
 
-## 8. Score: new packet `ScoreUpdate` (server -> client), type `0x15`
+The boss moves into the arena and oscillates vertically. It fires a three-projectile
+spread every second. Its collision bounds are larger than a regular Bydos. Destroying
+the boss awards 1000 points, advances the stage, resets the per-stage Bydos counter
+and resumes regular enemy spawning. The next stage gradually increases Bydos speed,
+spawn rate and health. Killing a regular Bydos with a player missile awards 100 points.
+
+To render the boss in the client, the game asset configuration must contain an entry
+for entity type `9` and an entity profile with `boss = true`, a valid sprite asset,
+label, and color. That profile is what activates the client's existing boss HUD and
+music handling. The supplied ZIP does not contain the runtime asset/config files, so
+those visual values cannot be edited or validated from this source archive.
+
+## 9. Score: new packet `ScoreUpdate` (server -> client), type `0x15`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | netId | u32  | Player whose score changed |
 | score | u32  | New total score of that player |
 
-Payload size: 8 bytes. The server keeps one score per player and sends it:
+Payload size: 8 bytes. The server keeps one score per player and sends it to a newly connected client for
+every player already in the room, and to every room member whenever a score changes.
+The player whose missile destroys an enemy receives its points: Bydos 100, boss 1000.
+Ramming an enemy gives no points. The client displays the local player's score in its
+existing score HUD.
 
-- to a newly connected client, for every player already in the game (its own score is 0);
-- to every client each time a player's score changes.
+## 10. Server implementation notes
 
-Suggested rule: the player whose missile destroys an enemy gets its points (Bydos 100,
-boss 1000). Ramming an enemy gives no points. The client shows the local player's score
-at the top right ("SCORE 0001500"); it stays hidden while no `ScoreUpdate` was received, so a
-server without this packet changes nothing.
+- `Disconnect` (`0x03`) carries `netId u32` followed by `sessionToken u64` (12-byte
+  payload), and is accepted only from the endpoint bound to that session.
+- Player IDs and entity IDs use separate counters/ranges.
+- A repeated `ConnectReq` from an already connected endpoint resends the connection
+  acknowledgement and current room state instead of creating another player.
+- Server packets share a monotonically increasing outgoing sequence counter, including
+  packets sent by different rooms. Each room broadcasts identical snapshot datagrams
+  to its own recipients.
+- The server rejects malformed headers and payload lengths before dispatching packets.
+- Snapshot keyframes and deltas each fit in one UDP datagram; the server does not
+  rely on IP fragmentation.
 
-## 9. Points to look at on the server side
 
-These are observations from testing the client against `ServerNetworkManager.hpp`:
+## 11. Snapshot keyframes and deltas
 
-1. **Player numbers.** The client shows "Player N" from the network id (first id =
-   Player 1). That works while only players get ids. Once enemies and missiles share
-   the same id counter, players will get scattered ids. Suggestion: add a `slot u8`
-   (0..3) at the end of `SpawnPlayer`, or keep a separate id range for players.
-2. **Duplicate `ConnectReq`.** Each `ConnectReq` creates a new player. If the `ConnectAck`
-   is lost (UDP), a client retrying would create a ghost player for 3 seconds.
-   Suggestion: if the endpoint is already connected, resend its `ConnectAck` instead.
-3. **One sequence counter for all clients.** Fine as long as every packet a client
-   receives comes from the same counter (the client drops `GameStateSync` whose
-   sequence is not newer than the last one). Keep enemies and missiles on the same
-   counter.
-4. **Snapshot size.** `GameStateSync` is 20 bytes per entity. With many missiles,
-   keep a datagram under ~1200 bytes (about 55 entities) or split it in several packets.
+The server sends packed entity states using 12-byte records (`netId`, quantized
+position, and quantized velocity). `GameStateSyncPacked` (`0x31`) is a full
+keyframe. `GameStateSyncDelta` (`0x32`) contains only entities whose packed
+state changed since the previous snapshot. Deltas are intentionally unreliable;
+a full keyframe is sent at least every 60 server snapshot updates so packet loss
+cannot leave a client permanently out of sync. Entity creation and destruction
+remain separate reliable events.
+
+Both packet types start with a `u16` state count followed by that many packed
+records. A delta is applied as a set of updates, not as a replacement for the
+client's complete entity list. Clients discard stale snapshot sequence numbers.
+
+## 12. Reliable event delivery
+
+The server reliably transmits connection/lobby responses, entity spawn and
+destruction events, health, augment, and score updates. The receiver responds
+with an `Ack` (`0x05`) whose four-byte payload is the acknowledged packet's
+sequence number. Reliable packets are retried with exponential backoff and a
+bounded retry count; duplicate packets are acknowledged but not applied twice.
+`PlayerInput` and snapshots remain unreliable because newer state supersedes
+older state.
 
 ## Testing
 
-`tools/mock_server.py` implements this extension (Bydos spawning on the right,
-forward fire, missiles, fire cooldown, collisions, health, death, difficulty, bonuses,
-augments and skins). Run it
-instead of the server to test the client:
+The runtime server implements the same authoritative gameplay rules. The optional
+`tools/mock_server.py` reference implementation, when present in your working copy,
+can still be used to test client rendering independently:
 
 ```
 python3 tools/mock_server.py 4242                     # difficulty chosen by the first player
