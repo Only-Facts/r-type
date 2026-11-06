@@ -4,13 +4,17 @@
 #include "network/INetworkSocket.hpp"
 #include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
+#include "ReliableUdpQueue.hpp"
+#include "ServerMetrics.hpp"
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <random>
 #include <limits>
+#include <cstring>
 #include <utility>
 
 namespace rtype::server {
@@ -61,6 +65,9 @@ namespace rtype::server {
     bool shootPressed{false};
     float hitCooldown{0.0f};
     std::uint32_t score{0};
+    std::uint64_t sessionToken{0};
+    std::uint32_t lastInputSequence{0};
+    bool hasInputSequence{false};
     std::uint8_t shotPattern{0};
     float shotPatternRemaining{0.0f};
     std::uint8_t damageLevel{0};
@@ -73,16 +80,35 @@ namespace rtype::server {
 
     explicit GameRoom(network::INetworkSocket& socket, RoomId id,
                       std::size_t maxPlayers, std::uint8_t difficulty,
-                      bool fixedDifficulty, std::uint32_t& outgoingSequence)
+                      bool fixedDifficulty, std::uint32_t& outgoingSequence,
+                      ReliableUdpQueue* reliableQueue = nullptr,
+                      ServerMetrics* metrics = nullptr)
       : _socket(socket), _roomId(id), _maxPlayers(maxPlayers),
         _fixedDifficulty(fixedDifficulty), _outgoingSeq(outgoingSequence),
-        _currentDifficulty(difficulty), _rng(std::random_device{}() ^ (id * 0x9E3779B9u)) {}
+        _reliableQueue(reliableQueue), _metrics(metrics),
+        _currentDifficulty(difficulty),
+        _rng(std::random_device{}() ^ (id * 0x9E3779B9u)) {}
 
     void update(float dt) {
-      const float elapsed = std::max(dt, 0.0f);
+      const float elapsed = std::isfinite(dt) ? std::max(dt, 0.0f) : 0.0f;
       removeTimedOutClients(elapsed);
       if (_clients.empty()) return;
-      updateGameLogic(std::clamp(elapsed, 0.0f, 0.25f));
+      const float accepted = std::min(elapsed, MAX_FRAME_DELTA);
+      _droppedSimulationSeconds += static_cast<double>(elapsed - accepted);
+      _tickAccumulator += accepted;
+      std::size_t steps = 0;
+      while (_tickAccumulator >= FIXED_TICK && steps < MAX_CATCHUP_TICKS) {
+        updateGameLogic(FIXED_TICK);
+        _tickAccumulator -= FIXED_TICK;
+        ++steps;
+        if (_clients.empty()) return;
+      }
+      if (steps == MAX_CATCHUP_TICKS && _tickAccumulator >= FIXED_TICK) {
+        const float retained = std::fmod(_tickAccumulator, FIXED_TICK);
+        _droppedSimulationSeconds += static_cast<double>(
+          _tickAccumulator - retained);
+        _tickAccumulator = retained;
+      }
       broadcastGameState();
     }
 
@@ -101,11 +127,13 @@ namespace rtype::server {
             handleConnect(reader, sender, header.payloadSize);
             break;
           case network::PacketType::PlayerInput:
-            if (header.payloadSize == sizeof(network::NetworkId) + 5 * sizeof(bool))
-              handleInput(reader, sender);
+            if (header.payloadSize == sizeof(network::NetworkId) +
+                sizeof(std::uint64_t) + 5)
+              handleInput(reader, sender, header.sequence);
             break;
           case network::PacketType::Disconnect:
-            if (header.payloadSize == sizeof(network::NetworkId))
+            if (header.payloadSize == sizeof(network::NetworkId) +
+                sizeof(std::uint64_t))
               handleDisconnect(reader, sender);
             break;
           default:
@@ -123,6 +151,9 @@ namespace rtype::server {
     [[nodiscard]] bool isFull() const { return playerCount() >= _maxPlayers; }
     [[nodiscard]] bool isEmpty() const { return _clients.empty(); }
     [[nodiscard]] bool bossActive() const { return _bossActive; }
+    [[nodiscard]] double droppedSimulationSeconds() const {
+      return _droppedSimulationSeconds;
+    }
     [[nodiscard]] std::uint32_t stageNumber() const { return _stageNumber; }
     [[nodiscard]] std::uint32_t killsThisStage() const { return _killsThisStage; }
     [[nodiscard]] std::uint32_t scoreFor(network::NetworkId id) const {
@@ -161,12 +192,31 @@ namespace rtype::server {
       return it != _clients.end() && sameEndpoint(it->second.endpoint, endpoint);
     }
 
+    [[nodiscard]] bool validateSession(network::NetworkId id,
+                                       const network::Endpoint& endpoint,
+                                       std::uint64_t token) const {
+      const auto it = _clients.find(id);
+      return it != _clients.end() && token != 0 &&
+        it->second.sessionToken == token &&
+        sameEndpoint(it->second.endpoint, endpoint);
+    }
+
   private:
     friend struct GameRoomTestAccess;
 
     static constexpr std::uint32_t BYDOS_KILLS_PER_BOSS = 10;
     static constexpr float AUGMENT_DURATION = 10.0f;
     static constexpr float PLAYER_MISSILE_SPEED = 900.0f;
+    static constexpr float FIXED_TICK = 1.0f / 60.0f;
+    static constexpr float WORLD_WIDTH = 1920.0f;
+    static constexpr float WORLD_HEIGHT = 1080.0f;
+    static constexpr float PLAYER_WIDTH = 33.0f;
+    static constexpr float PLAYER_HEIGHT = 34.0f;
+    static constexpr float MAX_FRAME_DELTA = 0.25f;
+    static constexpr std::size_t MAX_CATCHUP_TICKS = 15;
+    static constexpr std::size_t MAX_ACTIVE_ENTITIES = 48;
+    static constexpr std::size_t MAX_SNAPSHOT_ENTITIES = 52;
+    static constexpr std::uint64_t SNAPSHOT_KEYFRAME_INTERVAL = 60;
 
     static bool sameEndpoint(const network::Endpoint& lhs,
                              const network::Endpoint& rhs) {
@@ -177,6 +227,9 @@ namespace rtype::server {
     void handleConnect(network::PacketStreamReader& reader,
                        const network::Endpoint& sender,
                        std::uint16_t payloadSize) {
+      if (payloadSize != 0 && payloadSize != 1 &&
+          payloadSize != 2 && payloadSize != 6) return;
+
       for (auto& [id, existing] : _clients) {
         if (sameEndpoint(existing.endpoint, sender)) {
           sendConnectAck(existing);
@@ -184,9 +237,6 @@ namespace rtype::server {
           return;
         }
       }
-
-      if (payloadSize != 0 && payloadSize != 1 &&
-          payloadSize != 2 && payloadSize != 6) return;
 
       std::uint8_t diff = 1;
       std::uint8_t skin = 0xFF;
@@ -228,10 +278,14 @@ namespace rtype::server {
       client.skin = skin;
       client.hp = startHp;
       client.maxHp = startHp;
+      client.sessionToken = generateSessionToken();
       _clients[netId] = client;
       const ConnectedClient& connected = _clients.at(netId);
+      _forceFullSnapshot = true;
 
       sendConnectAck(connected);
+      sendSpawnPlayer(connected, sender);
+      sendHealthUpdate(connected.id, connected.hp, connected.maxHp, sender);
 
       for (const auto& [id, existing] : _clients) {
         if (id == netId) continue;
@@ -246,7 +300,9 @@ namespace rtype::server {
       for (const auto& [id, existing] : _clients) {
         sendScoreUpdate(existing, sender);
         sendActiveAugments(existing, sender);
+        if (id != netId) sendScoreUpdate(connected, existing.endpoint);
       }
+      sendScoreUpdate(connected, sender);
 
       for (const auto& [entId, ent] : _entities) {
         sendSpawnEntity(ent, sender);
@@ -268,11 +324,11 @@ namespace rtype::server {
     void sendConnectAck(const ConnectedClient& client) {
       network::PacketHeader header{
         network::PROTOCOL_MAGIC, network::PacketType::ConnectAck,
-        _outgoingSeq++, 5
+        _outgoingSeq++, 13
       };
       network::PacketStreamWriter writer;
-      writer << header << client.id << client.difficulty;
-      _socket.send(writer.getBuffer(), client.endpoint);
+      writer << header << client.id << client.difficulty << client.sessionToken;
+      sendDatagram(writer.getBuffer(), client.endpoint);
     }
 
     void resendWorldToClient(const ConnectedClient& client) {
@@ -300,7 +356,7 @@ namespace rtype::server {
       };
       network::PacketStreamWriter writer;
       writer << header << target.id << target.posX << target.posY << target.skin;
-      _socket.send(writer.getBuffer(), recipient);
+      sendDatagram(writer.getBuffer(), recipient);
     }
 
     void sendSpawnEntity(const ServerEntity& ent, const network::Endpoint& recipient) {
@@ -310,7 +366,7 @@ namespace rtype::server {
       };
       network::PacketStreamWriter writer;
       writer << header << ent.id << static_cast<std::uint8_t>(ent.type) << ent.posX << ent.posY;
-      _socket.send(writer.getBuffer(), recipient);
+      sendDatagram(writer.getBuffer(), recipient);
     }
 
     void sendHealthUpdate(network::NetworkId netId, std::uint8_t hp,
@@ -322,18 +378,24 @@ namespace rtype::server {
       };
       network::PacketStreamWriter writer;
       writer << header << netId << hp << maxHp;
-      _socket.send(writer.getBuffer(), recipient);
+      sendDatagram(writer.getBuffer(), recipient);
     }
 
     void handleInput(network::PacketStreamReader& reader,
-                     const network::Endpoint& sender) {
+                     const network::Endpoint& sender,
+                     std::uint32_t sequence) {
       network::NetworkId netId{};
+      std::uint64_t sessionToken{};
       std::uint8_t upValue{}, downValue{}, leftValue{};
       std::uint8_t rightValue{}, shootValue{};
-      reader >> netId >> upValue >> downValue >> leftValue
+      reader >> netId >> sessionToken >> upValue >> downValue >> leftValue
              >> rightValue >> shootValue;
       if (upValue > 1 || downValue > 1 || leftValue > 1 ||
-          rightValue > 1 || shootValue > 1) return;
+          rightValue > 1 || shootValue > 1) {
+        if (_metrics)
+          _metrics->malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       const bool up = upValue != 0;
       const bool down = downValue != 0;
       const bool left = leftValue != 0;
@@ -341,55 +403,75 @@ namespace rtype::server {
       const bool shoot = shootValue != 0;
 
       auto it = _clients.find(netId);
-      if (it != _clients.end()) {
-        if (!sameEndpoint(it->second.endpoint, sender)) {
-          return;
-        }
+      if (it == _clients.end() ||
+          !sameEndpoint(it->second.endpoint, sender) ||
+          it->second.sessionToken != sessionToken ||
+          !isNewerSequence(sequence, it->second.lastInputSequence,
+                           it->second.hasInputSequence)) {
+        if (_metrics)
+          _metrics->rejectedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      it->second.lastInputSequence = sequence;
+      it->second.hasInputSequence = true;
+      it->second.idleTime = 0.0f;
+      it->second.shootPressed = shoot;
 
-        it->second.idleTime = 0.0f;
-        it->second.shootPressed = shoot;
+      if (it->second.dead) {
+        it->second.velX = 0.f;
+        it->second.velY = 0.f;
+        return;
+      }
 
-        if (it->second.dead) {
-          it->second.velX = 0.f;
-          it->second.velY = 0.f;
-          return;
-        }
-
-        float speed = 300.0f;
-        it->second.velX = 0.0f;
-        it->second.velY = 0.0f;
-        if (up) it->second.velY -= speed;
-        if (down) it->second.velY += speed;
-        if (left) it->second.velX -= speed;
-        if (right) it->second.velX += speed;
+      float speed = 300.0f;
+      it->second.velX = 0.0f;
+      it->second.velY = 0.0f;
+      if (up) it->second.velY -= speed;
+      if (down) it->second.velY += speed;
+      if (left) it->second.velX -= speed;
+      if (right) it->second.velX += speed;
+      const float magnitude = std::hypot(it->second.velX, it->second.velY);
+      if (magnitude > speed) {
+        it->second.velX *= speed / magnitude;
+        it->second.velY *= speed / magnitude;
       }
     }
 
     void handleDisconnect(network::PacketStreamReader& reader,
                           const network::Endpoint& sender) {
       network::NetworkId netId{};
-      reader >> netId;
+      std::uint64_t sessionToken{};
+      reader >> netId >> sessionToken;
       auto it = _clients.find(netId);
-      if (it == _clients.end() || !sameEndpoint(it->second.endpoint, sender))
+      if (it == _clients.end() || !sameEndpoint(it->second.endpoint, sender) ||
+          it->second.sessionToken != sessionToken) {
+        if (_metrics)
+          _metrics->rejectedPackets.fetch_add(1, std::memory_order_relaxed);
         return;
+      }
       removeClient(netId);
     }
 
     void removeClient(network::NetworkId netId) {
       auto it = _clients.find(netId);
       if (it == _clients.end()) return;
-
+      if (_reliableQueue) _reliableQueue->cancelEndpoint(it->second.endpoint);
       _clients.erase(it);
+      removeOwnedProjectiles(netId);
       if (_clients.empty()) resetEmptyGame();
+      broadcastDestroyEntity(netId);
+    }
 
-      network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::DestroyEntity,
-        _outgoingSeq++, sizeof(netId)
-      };
-      network::PacketStreamWriter writer;
-      writer << header << netId;
-      for (const auto& [id, other] : _clients)
-        _socket.send(writer.getBuffer(), other.endpoint);
+    void removeOwnedProjectiles(network::NetworkId ownerId) {
+      std::vector<network::NetworkId> projectiles;
+      for (const auto& [id, entity] : _entities) {
+        if (isPlayerMissile(entity.type) && entity.ownerId == ownerId)
+          projectiles.push_back(id);
+      }
+      for (const auto id : projectiles) {
+        _entities.erase(id);
+        broadcastDestroyEntity(id);
+      }
     }
 
     void resetEmptyGame() {
@@ -401,6 +483,10 @@ namespace rtype::server {
       _stageNumber = 1;
       _killsThisStage = 0;
       _bossActive = false;
+      _tickAccumulator = 0.0f;
+      _snapshotTick = 0;
+      _forceFullSnapshot = true;
+      _previousSnapshot.clear();
     }
 
     void removeTimedOutClients(float dt) {
@@ -423,9 +509,9 @@ namespace rtype::server {
           continue;
         }
         client.posX = std::clamp(client.posX + client.velX * dt,
-                                 0.0f, 1887.0f);
+                                 0.0f, WORLD_WIDTH - PLAYER_WIDTH);
         client.posY = std::clamp(client.posY + client.velY * dt,
-                                 0.0f, 1046.0f);
+                                 0.0f, WORLD_HEIGHT - PLAYER_HEIGHT);
         client.shootCooldown = std::max(0.0f, client.shootCooldown - dt);
         if (client.shootPressed && client.shootCooldown <= 0.f) {
           client.shootCooldown = 0.25f;
@@ -547,11 +633,26 @@ namespace rtype::server {
       }
     }
 
+    bool canSpawnEntity() const {
+      return _entities.size() < MAX_ACTIVE_ENTITIES;
+    }
+
+    network::NetworkId allocateEntityId() {
+      for (std::size_t attempt = 0; attempt < MAX_ACTIVE_ENTITIES + 1; ++attempt) {
+        if (_nextEntityId < 2000) _nextEntityId = 2000;
+        const network::NetworkId candidate = _nextEntityId++;
+        if (_entities.find(candidate) == _entities.end()) return candidate;
+      }
+      return 0;
+    }
+
     void spawnMissile(const ConnectedClient& client, ServerEntityType type,
                       int damage, float angleDegrees, float offsetY = 0.0f) {
+      if (!canSpawnEntity()) return;
       const float angle = angleDegrees * 0.017453292519943295f;
       ServerEntity missile;
-      missile.id = _nextEntityId++;
+      missile.id = allocateEntityId();
+      if (missile.id == 0) return;
       missile.type = type;
       missile.posX = client.posX + 33.0f;
       missile.posY = client.posY + 6.0f + offsetY;
@@ -566,8 +667,10 @@ namespace rtype::server {
     }
 
     void spawnBydo() {
+      if (!canSpawnEntity()) return;
       ServerEntity bydo;
-      bydo.id = _nextEntityId++;
+      bydo.id = allocateEntityId();
+      if (bydo.id == 0) return;
       bydo.type = ServerEntityType::Bydos;
       bydo.posX = 1970.0f;
       bydo.posY = static_cast<float>(randomInt(80, 960));
@@ -585,19 +688,6 @@ namespace rtype::server {
     }
 
     void spawnBoss() {
-      ServerEntity boss;
-      boss.id = _nextEntityId++;
-      boss.type = ServerEntityType::Boss;
-      boss.posX = 1810.0f;
-      boss.posY = 540.0f;
-      boss.baseY = boss.posY;
-      boss.velX = -35.0f;
-      const int playerScale = static_cast<int>(_clients.size()) * 8;
-      const int stageScale = static_cast<int>(_stageNumber) * 12;
-      const int difficultyScale = static_cast<int>(_currentDifficulty) * 12;
-      boss.hp = std::clamp(45 + playerScale + stageScale + difficultyScale,
-                           1, 255);
-      boss.maxHp = boss.hp;
       std::vector<network::NetworkId> remainingEnemies;
       for (const auto& [id, entity] : _entities) {
         if (entity.type == ServerEntityType::Bydos ||
@@ -608,6 +698,22 @@ namespace rtype::server {
         _entities.erase(id);
         broadcastDestroyEntity(id);
       }
+      if (!canSpawnEntity()) return;
+      ServerEntity boss;
+      boss.id = allocateEntityId();
+      if (boss.id == 0) return;
+      boss.type = ServerEntityType::Boss;
+      boss.posX = 1810.0f;
+      boss.posY = 540.0f;
+      boss.baseY = boss.posY;
+      boss.velX = -35.0f;
+      const int playerScale = static_cast<int>(_clients.size()) * 8;
+      const auto boundedStage = std::min<std::uint32_t>(_stageNumber, 12);
+      const int stageScale = static_cast<int>(boundedStage) * 12;
+      const int difficultyScale = static_cast<int>(_currentDifficulty) * 12;
+      boss.hp = std::clamp(45 + playerScale + stageScale + difficultyScale,
+                           1, 255);
+      boss.maxHp = boss.hp;
       _entities[boss.id] = boss;
       _bossActive = true;
       _bossShootTimer = 0.0f;
@@ -622,7 +728,8 @@ namespace rtype::server {
 
     void onBossDefeated() {
       _bossActive = false;
-      ++_stageNumber;
+      if (_stageNumber < std::numeric_limits<std::uint32_t>::max())
+        ++_stageNumber;
       _killsThisStage = 0;
       _bydoSpawnTimer = 0.0f;
       _enemyShootTimer = 0.0f;
@@ -630,8 +737,10 @@ namespace rtype::server {
     }
 
     void spawnEnemyMissile(const ServerEntity& enemy) {
+      if (!canSpawnEntity()) return;
       ServerEntity missile;
-      missile.id = _nextEntityId++;
+      missile.id = allocateEntityId();
+      if (missile.id == 0) return;
       missile.type = ServerEntityType::EnemyMissile;
       missile.posX = enemy.posX - 10.0f;
       missile.posY = enemy.posY + 14.0f;
@@ -668,13 +777,16 @@ namespace rtype::server {
 
     void spawnBossVolley(const ServerEntity& boss) {
       for (const float angleDegrees : {-12.0f, 0.0f, 12.0f}) {
+        if (!canSpawnEntity()) break;
         ServerEntity missile;
-        missile.id = _nextEntityId++;
+        missile.id = allocateEntityId();
+        if (missile.id == 0) break;
         missile.type = ServerEntityType::EnemyMissile;
         missile.posX = boss.posX - 55.0f;
         missile.posY = boss.posY + 35.0f;
         const float angle = angleDegrees * 0.017453292519943295f;
-        const float speed = 440.0f + 30.0f * static_cast<float>(_stageNumber - 1);
+        const float speed = std::min(
+        440.0f + 30.0f * static_cast<float>(_stageNumber - 1), 600.0f);
         missile.velX = -speed * std::cos(angle);
         missile.velY = speed * std::sin(angle);
         _entities[missile.id] = missile;
@@ -852,11 +964,13 @@ namespace rtype::server {
     }
 
     void spawnBonus(float x, float y) {
+      if (!canSpawnEntity()) return;
       const int chance = _currentDifficulty == 0 ? 40 :
         (_currentDifficulty == 2 ? 20 : 30);
       if (randomInt(0, 99) >= chance) return;
       ServerEntity bonus;
-      bonus.id = _nextEntityId++;
+      bonus.id = allocateEntityId();
+      if (bonus.id == 0) return;
       bonus.type = static_cast<ServerEntityType>(randomInt(4, 7));
       bonus.posX = x;
       bonus.posY = y;
@@ -926,7 +1040,7 @@ namespace rtype::server {
       };
       network::PacketStreamWriter writer;
       writer << header << netId << augment << level << remaining;
-      _socket.send(writer.getBuffer(), recipient);
+      sendDatagram(writer.getBuffer(), recipient);
     }
 
     void sendScoreUpdate(const ConnectedClient& client,
@@ -937,7 +1051,7 @@ namespace rtype::server {
       };
       network::PacketStreamWriter writer;
       writer << header << client.id << client.score;
-      _socket.send(writer.getBuffer(), recipient);
+      sendDatagram(writer.getBuffer(), recipient);
     }
 
     void broadcastScoreUpdate(const ConnectedClient& client) {
@@ -953,7 +1067,7 @@ namespace rtype::server {
       network::PacketStreamWriter writer;
       writer << header << id;
       for (const auto& [clientId, client] : _clients)
-        _socket.send(writer.getBuffer(), client.endpoint);
+        sendDatagram(writer.getBuffer(), client.endpoint);
     }
 
     void destroyEntity(network::NetworkId entId) {
@@ -968,33 +1082,81 @@ namespace rtype::server {
     void broadcastGameState() {
       if (_clients.empty()) return;
 
+      std::unordered_map<network::NetworkId,
+                         network::PackedEntityStateData> current;
+      current.reserve(_clients.size() + _entities.size());
+      for (const auto& [id, client] : _clients) {
+        const network::EntityStateData state{
+          client.id, client.posX, client.posY, client.velX, client.velY
+        };
+        current.emplace(id, network::packEntityState(state));
+      }
+      for (const auto& [id, entity] : _entities) {
+        const network::EntityStateData state{
+          entity.id, entity.posX, entity.posY, entity.velX, entity.velY
+        };
+        current.emplace(id, network::packEntityState(state));
+      }
+
+      ++_snapshotTick;
+      const bool fullSnapshot = _forceFullSnapshot ||
+        (_snapshotTick % SNAPSHOT_KEYFRAME_INTERVAL == 0);
+      std::vector<network::PackedEntityStateData> states;
+      states.reserve(current.size());
+      for (const auto& [id, state] : current) {
+        const auto previous = _previousSnapshot.find(id);
+        if (fullSnapshot || previous == _previousSnapshot.end() ||
+            previous->second != state) {
+          states.push_back(state);
+        }
+      }
+      _previousSnapshot = std::move(current);
+      _forceFullSnapshot = false;
+      if (states.empty() && !fullSnapshot) return;
+
+      network::PacketStreamWriter payload;
+      payload << static_cast<std::uint16_t>(states.size());
+      for (const auto& state : states) payload << state;
+
+      const auto packetType = fullSnapshot
+        ? network::PacketType::GameStateSyncPacked
+        : network::PacketType::GameStateSyncDelta;
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::GameStateSync,
-        _outgoingSeq++, 0
+        network::PROTOCOL_MAGIC, packetType, _outgoingSeq++,
+        static_cast<std::uint16_t>(payload.getBuffer().size())
       };
       network::PacketStreamWriter writer;
       writer << header;
+      auto packet = writer.getBuffer();
+      packet.insert(packet.end(), payload.getBuffer().begin(),
+                    payload.getBuffer().end());
+      for (const auto& [id, client] : _clients)
+        sendDatagram(packet, client.endpoint, false);
+    }
 
-      std::uint16_t totalCount = static_cast<std::uint16_t>(_clients.size() + _entities.size());
-      writer << totalCount;
-
-      for (const auto& [id, client] : _clients) {
-        network::EntityStateData state{
-          client.id, client.posX, client.posY, client.velX, client.velY
-        };
-        writer << state;
+    void sendDatagram(const network::PacketData& packet,
+                      const network::Endpoint& recipient,
+                      bool reliable = true) {
+      if (reliable && _reliableQueue) {
+        _reliableQueue->send(_socket, packet, recipient);
+        return;
       }
+      _socket.send(packet, recipient);
+      if (_metrics) _metrics->recordSend(packet.size());
+    }
 
-      for (const auto& [id, ent] : _entities) {
-        network::EntityStateData state{
-          ent.id, ent.posX, ent.posY, ent.velX, ent.velY
-        };
-        writer << state;
-      }
+    static bool isNewerSequence(std::uint32_t candidate,
+                                std::uint32_t previous, bool initialized) {
+      if (!initialized) return true;
+      const std::uint32_t delta = candidate - previous;
+      return delta != 0 && delta < 0x80000000u;
+    }
 
-      for (const auto& [id, client] : _clients) {
-        _socket.send(writer.getBuffer(), client.endpoint);
-      }
+    std::uint64_t generateSessionToken() {
+      std::random_device source;
+      std::uint64_t token = static_cast<std::uint64_t>(source()) << 32;
+      token |= static_cast<std::uint64_t>(source());
+      return token == 0 ? 1 : token;
     }
 
     network::INetworkSocket& _socket;
@@ -1006,7 +1168,15 @@ namespace rtype::server {
     network::NetworkId _nextPlayerId{1000};
     network::NetworkId _nextEntityId{2000};
     std::uint32_t& _outgoingSeq;
+    ReliableUdpQueue* _reliableQueue{nullptr};
+    ServerMetrics* _metrics{nullptr};
     std::uint8_t _currentDifficulty{1};
+    float _tickAccumulator{0.0f};
+    double _droppedSimulationSeconds{0.0};
+    std::uint64_t _snapshotTick{0};
+    bool _forceFullSnapshot{true};
+    std::unordered_map<network::NetworkId,
+                       network::PackedEntityStateData> _previousSnapshot;
     float _bydoSpawnTimer{0.f};
     float _enemyShootTimer{0.f};
     float _bossShootTimer{0.f};
