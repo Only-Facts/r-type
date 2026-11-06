@@ -5,6 +5,8 @@
 #include "ServerNetworkManager.hpp"
 #include <chrono>
 #include <cstddef>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -28,7 +30,7 @@ std::size_t parse_arguments(int argc, const char *argv[],
         if (value == 0 || value > 65535) return bad_usage();
         *port = value;
       } else if (flag == "--max-rooms") {
-        if (value == 0 || value > 256) return bad_usage();
+        if (value == 0 || value > 128) return bad_usage();
         *maxRooms = value;
       } else if (flag == "--room-capacity") {
         if (value == 0 || value > 4) return bad_usage();
@@ -65,16 +67,51 @@ int main(int argc, const char *argv[]) {
     rtype::server::ServerNetworkManager serverNet(
       serverSocket, maxRooms, roomCapacity);
     serverNet.startNetworkThread();
+    info("Multi-instance server ready.");
     auto lastTime = std::chrono::steady_clock::now();
+    auto nextFrame = lastTime;
+    auto nextStats = lastTime + std::chrono::seconds(10);
+    auto previousStats = serverNet.stats();
+    constexpr auto frameDuration = std::chrono::microseconds(16667);
 
     while (true) {
-      auto now = std::chrono::steady_clock::now();
-      float dt = std::chrono::duration<float>(now - lastTime).count();
+      nextFrame += frameDuration;
+      const auto now = std::chrono::steady_clock::now();
+      const float dt = std::chrono::duration<float>(now - lastTime).count();
       lastTime = now;
-
       serverNet.update(dt);
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      if (now >= nextStats) {
+        const auto current = serverNet.stats();
+        const double seconds = 10.0;
+        const double rxKiB = static_cast<double>(
+          current.receivedBytes - previousStats.receivedBytes) /
+          seconds / 1024.0;
+        const double txKiB = static_cast<double>(
+          current.sentBytes - previousStats.sentBytes) /
+          seconds / 1024.0;
+        std::ostringstream report;
+        report << "Network stats: rooms=" << current.rooms
+               << " players=" << current.players
+               << " rx=" << std::fixed << std::setprecision(1) << rxKiB
+               << " KiB/s tx=" << txKiB << " KiB/s"
+               << " reliable(pending=" << current.reliablePending
+               << ", acked=" << current.reliableAcknowledged
+               << ", retried=" << current.reliableRetransmitted
+               << ", timeout=" << current.reliableTimedOut << ')'
+               << " malformed=" << current.malformedPackets
+               << " rejected=" << current.rejectedPackets
+               << " rate-limited=" << current.rateLimitedPackets
+               << " queue-drops=" << current.receiveQueueDrops;
+        info(report.str().c_str());
+        previousStats = current;
+        nextStats = now + std::chrono::seconds(10);
+      }
+
+      std::this_thread::sleep_until(nextFrame);
+      const auto afterSleep = std::chrono::steady_clock::now();
+      if (afterSleep > nextFrame + std::chrono::milliseconds(100))
+        nextFrame = afterSleep;
     }
     return SUCCESS;
   } catch (const rtype::RtypeError& e) {
