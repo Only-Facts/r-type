@@ -13,7 +13,6 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
-#include <stop_token>
 
 namespace rtype::server {
 

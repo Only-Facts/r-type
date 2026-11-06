@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <optional>
+#include <random>
+#include <limits>
+#include <utility>
 
 namespace rtype::server {
 
@@ -22,7 +24,8 @@ namespace rtype::server {
     BonusTriple = 5,
     BonusHeal = 6,
     BonusDamage = 7,
-    PlayerMissileHeavy = 8
+    PlayerMissileHeavy = 8,
+    Boss = 9
   };
 
   struct ServerEntity {
@@ -35,6 +38,9 @@ namespace rtype::server {
     int hp{1};
     int maxHp{1};
     network::NetworkId ownerId{0};
+    int damage{1};
+    float age{0.0f};
+    float baseY{0.0f};
   };
 
   struct ConnectedClient {
@@ -53,6 +59,12 @@ namespace rtype::server {
     float deathTimer{0.f};
     float shootCooldown{0.f};
     bool shootPressed{false};
+    float hitCooldown{0.0f};
+    std::uint32_t score{0};
+    std::uint8_t shotPattern{0};
+    float shotPatternRemaining{0.0f};
+    std::uint8_t damageLevel{0};
+    float damageRemaining{0.0f};
   };
 
   class GameRoom {
@@ -64,7 +76,7 @@ namespace rtype::server {
                       bool fixedDifficulty, std::uint32_t& outgoingSequence)
       : _socket(socket), _roomId(id), _maxPlayers(maxPlayers),
         _fixedDifficulty(fixedDifficulty), _outgoingSeq(outgoingSequence),
-        _currentDifficulty(difficulty) {}
+        _currentDifficulty(difficulty), _rng(std::random_device{}() ^ (id * 0x9E3779B9u)) {}
 
     void update(float dt) {
       const float elapsed = std::max(dt, 0.0f);
@@ -110,6 +122,27 @@ namespace rtype::server {
     [[nodiscard]] std::uint8_t difficulty() const { return _currentDifficulty; }
     [[nodiscard]] bool isFull() const { return playerCount() >= _maxPlayers; }
     [[nodiscard]] bool isEmpty() const { return _clients.empty(); }
+    [[nodiscard]] bool bossActive() const { return _bossActive; }
+    [[nodiscard]] std::uint32_t stageNumber() const { return _stageNumber; }
+    [[nodiscard]] std::uint32_t killsThisStage() const { return _killsThisStage; }
+    [[nodiscard]] std::uint32_t scoreFor(network::NetworkId id) const {
+      const auto it = _clients.find(id);
+      return it == _clients.end() ? 0 : it->second.score;
+    }
+    [[nodiscard]] std::size_t entityCount(ServerEntityType type) const {
+      return static_cast<std::size_t>(std::count_if(
+        _entities.begin(), _entities.end(), [type](const auto& entry) {
+          return entry.second.type == type;
+        }));
+    }
+    [[nodiscard]] std::uint8_t augmentLevel(network::NetworkId id,
+                                            std::uint8_t augment) const {
+      const auto it = _clients.find(id);
+      if (it == _clients.end()) return 0;
+      if (augment == 1 || augment == 2)
+        return it->second.shotPattern == augment ? 1 : 0;
+      return augment == 3 ? it->second.damageLevel : 0;
+    }
 
     [[nodiscard]] bool containsEndpoint(const network::Endpoint& endpoint) const {
       for (const auto& [id, client] : _clients) {
@@ -129,6 +162,12 @@ namespace rtype::server {
     }
 
   private:
+    friend struct GameRoomTestAccess;
+
+    static constexpr std::uint32_t BYDOS_KILLS_PER_BOSS = 10;
+    static constexpr float AUGMENT_DURATION = 10.0f;
+    static constexpr float PLAYER_MISSILE_SPEED = 900.0f;
+
     static bool sameEndpoint(const network::Endpoint& lhs,
                              const network::Endpoint& rhs) {
       return lhs.address == rhs.address && lhs.port == rhs.port;
@@ -180,13 +219,19 @@ namespace rtype::server {
 
       const float startX = 200.0f + ((netId % 4) * 50.0f);
       const float startY = 300.0f + ((netId % 4) * 40.0f);
-      ConnectedClient client{
-        netId, sender, startX, startY, 0.0f, 0.0f, 0.0f,
-        _currentDifficulty, skin, startHp, startHp, false, 0.f, 0.f, false
-      };
+      ConnectedClient client;
+      client.id = netId;
+      client.endpoint = sender;
+      client.posX = startX;
+      client.posY = startY;
+      client.difficulty = _currentDifficulty;
+      client.skin = skin;
+      client.hp = startHp;
+      client.maxHp = startHp;
       _clients[netId] = client;
+      const ConnectedClient& connected = _clients.at(netId);
 
-      sendConnectAck(client);
+      sendConnectAck(connected);
 
       for (const auto& [id, existing] : _clients) {
         if (id == netId) continue;
@@ -195,8 +240,12 @@ namespace rtype::server {
       }
 
       for (const auto& [id, existing] : _clients) {
-        sendSpawnPlayer(client, existing.endpoint);
-        sendHealthUpdate(netId, client.hp, client.maxHp, existing.endpoint);
+        sendSpawnPlayer(connected, existing.endpoint);
+        sendHealthUpdate(netId, connected.hp, connected.maxHp, existing.endpoint);
+      }
+      for (const auto& [id, existing] : _clients) {
+        sendScoreUpdate(existing, sender);
+        sendActiveAugments(existing, sender);
       }
 
       for (const auto& [entId, ent] : _entities) {
@@ -227,11 +276,17 @@ namespace rtype::server {
     }
 
     void resendWorldToClient(const ConnectedClient& client) {
+      sendSpawnPlayer(client, client.endpoint);
+      sendHealthUpdate(client.id, client.hp, client.maxHp, client.endpoint);
       for (const auto& [id, existing] : _clients) {
         if (id == client.id) continue;
         sendSpawnPlayer(existing, client.endpoint);
         sendHealthUpdate(existing.id, existing.hp, existing.maxHp, client.endpoint);
+        sendScoreUpdate(existing, client.endpoint);
+        sendActiveAugments(existing, client.endpoint);
       }
+      sendScoreUpdate(client, client.endpoint);
+      sendActiveAugments(client, client.endpoint);
       for (const auto& [entId, ent] : _entities) {
         sendSpawnEntity(ent, client.endpoint);
         if (ent.maxHp > 1) sendHealthUpdate(entId, ent.hp, ent.maxHp, client.endpoint);
@@ -250,7 +305,7 @@ namespace rtype::server {
 
     void sendSpawnEntity(const ServerEntity& ent, const network::Endpoint& recipient) {
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, static_cast<network::PacketType>(0x12),
+        network::PROTOCOL_MAGIC, network::PacketType::SpawnEntity,
         _outgoingSeq++, 13
       };
       network::PacketStreamWriter writer;
@@ -262,7 +317,7 @@ namespace rtype::server {
                           std::uint8_t maxHp,
                           const network::Endpoint& recipient) {
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, static_cast<network::PacketType>(0x13),
+        network::PROTOCOL_MAGIC, network::PacketType::HealthUpdate,
         _outgoingSeq++, 6
       };
       network::PacketStreamWriter writer;
@@ -339,9 +394,13 @@ namespace rtype::server {
 
     void resetEmptyGame() {
       _entities.clear();
-      _nextEntityId = 1;
+      _nextEntityId = 2000;
       _bydoSpawnTimer = 0.0f;
       _enemyShootTimer = 0.0f;
+      _bossShootTimer = 0.0f;
+      _stageNumber = 1;
+      _killsThisStage = 0;
+      _bossActive = false;
     }
 
     void removeTimedOutClients(float dt) {
@@ -355,82 +414,153 @@ namespace rtype::server {
 
     void updateGameLogic(float dt) {
       std::vector<network::NetworkId> clientsToRemove;
-
       for (auto& [id, client] : _clients) {
+        updateAugmentTimers(client, dt);
+        client.hitCooldown = std::max(0.0f, client.hitCooldown - dt);
         if (client.dead) {
           client.deathTimer -= dt;
-          if (client.deathTimer <= 0.f) {
-            clientsToRemove.push_back(id);
-          }
+          if (client.deathTimer <= 0.f) clientsToRemove.push_back(id);
           continue;
         }
-
-        client.posX += client.velX * dt;
-        client.posY += client.velY * dt;
-
-        if (client.shootCooldown > 0.f) {
-          client.shootCooldown -= dt;
-        }
+        client.posX = std::clamp(client.posX + client.velX * dt,
+                                 0.0f, 1887.0f);
+        client.posY = std::clamp(client.posY + client.velY * dt,
+                                 0.0f, 1046.0f);
+        client.shootCooldown = std::max(0.0f, client.shootCooldown - dt);
         if (client.shootPressed && client.shootCooldown <= 0.f) {
           client.shootCooldown = 0.25f;
           spawnPlayerMissile(client);
         }
       }
-
-      for (auto id : clientsToRemove) removeClient(id);
+      for (const auto id : clientsToRemove) removeClient(id);
       if (_clients.empty()) return;
 
-      _bydoSpawnTimer += dt;
-      float spawnInterval = 1.2f;
-      if (_currentDifficulty == 0) spawnInterval = 1.6f;
-      else if (_currentDifficulty == 2) spawnInterval = 0.8f;
-
-      if (_bydoSpawnTimer >= spawnInterval) {
-        _bydoSpawnTimer = 0.f;
-        spawnBydo();
-      }
+      updateEnemySpawning(dt);
+      updateEntities(dt);
+      updateEnemyShooting(dt);
 
       std::vector<network::NetworkId> destroyedEntities;
-      for (auto& [entId, ent] : _entities) {
-        ent.posX += ent.velX * dt;
-        ent.posY += ent.velY * dt;
+      checkCollisions(destroyedEntities);
+      sortUnique(destroyedEntities);
+      for (const auto id : destroyedEntities) destroyEntity(id);
+      maybeSpawnBoss();
+    }
 
-        if (ent.posX < -100.f || ent.posX > 2120.f || ent.posY < -100.f || ent.posY > 1180.f) {
-          destroyedEntities.push_back(entId);
+    void updateAugmentTimers(ConnectedClient& client, float dt) {
+      if (client.shotPattern != 0) {
+        client.shotPatternRemaining -= dt;
+        if (client.shotPatternRemaining <= 0.0f) {
+          sendAugmentUpdate(client.id, client.shotPattern, 0, 0.0f);
+          client.shotPattern = 0;
+          client.shotPatternRemaining = 0.0f;
         }
       }
+      if (client.damageLevel > 0) {
+        client.damageRemaining -= dt;
+        if (client.damageRemaining <= 0.0f) {
+          sendAugmentUpdate(client.id, 3, 0, 0.0f);
+          client.damageLevel = 0;
+          client.damageRemaining = 0.0f;
+        }
+      }
+    }
 
-      float enemyShootInterval = _currentDifficulty == 0 ? 4.0f :
+    void updateEnemySpawning(float dt) {
+      if (_bossActive || _killsThisStage >= BYDOS_KILLS_PER_BOSS) return;
+      float interval = 1.2f;
+      if (_currentDifficulty == 0) interval = 1.6f;
+      else if (_currentDifficulty == 2) interval = 0.8f;
+      interval = std::max(0.45f, interval *
+        std::pow(0.94f, static_cast<float>(_stageNumber - 1)));
+      _bydoSpawnTimer += dt;
+      if (_bydoSpawnTimer >= interval &&
+          entityCount(ServerEntityType::Bydos) < MAX_ACTIVE_BYDOS) {
+        _bydoSpawnTimer = 0.0f;
+        spawnBydo();
+      }
+    }
+
+    void updateEntities(float dt) {
+      std::vector<network::NetworkId> destroyed;
+      for (auto& [id, entity] : _entities) {
+        entity.age += dt;
+        if (entity.type == ServerEntityType::Boss) {
+          entity.posX = std::max(1510.0f, entity.posX + entity.velX * dt);
+          entity.posY = entity.baseY + std::sin(entity.age * 1.35f) * 125.0f;
+          continue;
+        }
+        entity.posX += entity.velX * dt;
+        entity.posY += entity.velY * dt;
+        if (entity.posX < -100.0f || entity.posX > 2120.0f ||
+            entity.posY < -100.0f || entity.posY > 1180.0f) {
+          destroyed.push_back(id);
+        }
+      }
+      for (const auto id : destroyed) _entities.erase(id);
+      for (const auto id : destroyed) broadcastDestroyEntity(id);
+    }
+
+    void updateEnemyShooting(float dt) {
+      float interval = _currentDifficulty == 0 ? 4.0f :
         (_currentDifficulty == 1 ? 2.0f : 1.11f);
+      interval = std::max(0.45f, interval /
+        (1.0f + 0.08f * static_cast<float>(_stageNumber - 1)));
       _enemyShootTimer += dt;
-      if (_enemyShootTimer >= enemyShootInterval) {
-        _enemyShootTimer = 0.f;
+      if (_enemyShootTimer >= interval) {
+        _enemyShootTimer = 0.0f;
         std::vector<ServerEntity> shooters;
-        for (const auto& [entId, ent] : _entities) {
-          if (ent.type == ServerEntityType::Bydos) shooters.push_back(ent);
+        for (const auto& [id, entity] : _entities) {
+          if (entity.type == ServerEntityType::Bydos)
+            shooters.push_back(entity);
         }
         for (const auto& shooter : shooters) spawnEnemyMissile(shooter);
       }
 
-      checkCollisions(destroyedEntities);
-
-      for (auto entId : destroyedEntities) {
-        destroyEntity(entId);
+      if (!_bossActive) return;
+      _bossShootTimer += dt;
+      if (_bossShootTimer < 1.0f) return;
+      _bossShootTimer = 0.0f;
+      const auto boss = std::find_if(_entities.begin(), _entities.end(),
+        [](const auto& entry) {
+          return entry.second.type == ServerEntityType::Boss;
+        });
+      if (boss != _entities.end()) {
+        const ServerEntity bossState = boss->second;
+        spawnBossVolley(bossState);
       }
     }
 
     void spawnPlayerMissile(const ConnectedClient& client) {
+      const auto type = client.damageLevel > 0
+        ? ServerEntityType::PlayerMissileHeavy
+        : ServerEntityType::PlayerMissile;
+      const int damage = 1 + static_cast<int>(client.damageLevel);
+      if (client.shotPattern == 1) {
+        spawnMissile(client, type, damage, 0.0f, -8.0f);
+        spawnMissile(client, type, damage, 0.0f, 8.0f);
+      } else if (client.shotPattern == 2) {
+        spawnMissile(client, type, damage, -8.0f);
+        spawnMissile(client, type, damage, 0.0f);
+        spawnMissile(client, type, damage, 8.0f);
+      } else {
+        spawnMissile(client, type, damage, 0.0f);
+      }
+    }
+
+    void spawnMissile(const ConnectedClient& client, ServerEntityType type,
+                      int damage, float angleDegrees, float offsetY = 0.0f) {
+      const float angle = angleDegrees * 0.017453292519943295f;
       ServerEntity missile;
       missile.id = _nextEntityId++;
-      missile.type = ServerEntityType::PlayerMissile;
-      missile.posX = client.posX + 33.f;
-      missile.posY = client.posY + 6.f;
-      missile.velX = 900.f;
-      missile.velY = 0.f;
+      missile.type = type;
+      missile.posX = client.posX + 33.0f;
+      missile.posY = client.posY + 6.0f + offsetY;
+      missile.velX = PLAYER_MISSILE_SPEED * std::cos(angle);
+      missile.velY = PLAYER_MISSILE_SPEED * std::sin(angle);
       missile.hp = 1;
       missile.maxHp = 1;
       missile.ownerId = client.id;
-
+      missile.damage = damage;
       _entities[missile.id] = missile;
       broadcastSpawnEntity(missile);
     }
@@ -439,184 +569,400 @@ namespace rtype::server {
       ServerEntity bydo;
       bydo.id = _nextEntityId++;
       bydo.type = ServerEntityType::Bydos;
-      bydo.posX = 1970.f;
-      bydo.posY = static_cast<float>(80 + (rand() % 881));
-      bydo.velX = -160.f;
-      bydo.velY = 0.f;
-
-      int hp = 2;
-      if (_currentDifficulty == 0) hp = 1;
-      else if (_currentDifficulty == 2) hp = 3;
+      bydo.posX = 1970.0f;
+      bydo.posY = static_cast<float>(randomInt(80, 960));
+      const float stageSpeed = std::min(
+        1.0f + 0.035f * static_cast<float>(_stageNumber - 1), 1.65f);
+      bydo.velX = -160.0f * stageSpeed;
+      int hp = _currentDifficulty == 0 ? 1 :
+        (_currentDifficulty == 2 ? 3 : 2);
+      hp = std::min(8, hp + static_cast<int>(_stageNumber - 1) / 3);
       bydo.hp = hp;
       bydo.maxHp = hp;
-
       _entities[bydo.id] = bydo;
       broadcastSpawnEntity(bydo);
-      if (bydo.maxHp > 1) {
-        broadcastHealthUpdate(bydo.id, bydo.hp, bydo.maxHp);
-      }
+      if (bydo.maxHp > 1) broadcastHealthUpdate(bydo.id, bydo.hp, bydo.maxHp);
     }
 
-    void spawnEnemyMissile(const ServerEntity& bydo) {
-      ServerEntity miss;
-      miss.id = _nextEntityId++;
-      miss.type = ServerEntityType::EnemyMissile;
-      miss.posX = bydo.posX - 10.f;
-      miss.posY = bydo.posY + 14.f;
+    void spawnBoss() {
+      ServerEntity boss;
+      boss.id = _nextEntityId++;
+      boss.type = ServerEntityType::Boss;
+      boss.posX = 1810.0f;
+      boss.posY = 540.0f;
+      boss.baseY = boss.posY;
+      boss.velX = -35.0f;
+      const int playerScale = static_cast<int>(_clients.size()) * 8;
+      const int stageScale = static_cast<int>(_stageNumber) * 12;
+      const int difficultyScale = static_cast<int>(_currentDifficulty) * 12;
+      boss.hp = std::clamp(45 + playerScale + stageScale + difficultyScale,
+                           1, 255);
+      boss.maxHp = boss.hp;
+      std::vector<network::NetworkId> remainingEnemies;
+      for (const auto& [id, entity] : _entities) {
+        if (entity.type == ServerEntityType::Bydos ||
+            entity.type == ServerEntityType::EnemyMissile)
+          remainingEnemies.push_back(id);
+      }
+      for (const auto id : remainingEnemies) {
+        _entities.erase(id);
+        broadcastDestroyEntity(id);
+      }
+      _entities[boss.id] = boss;
+      _bossActive = true;
+      _bossShootTimer = 0.0f;
+      broadcastSpawnEntity(boss);
+      broadcastHealthUpdate(boss.id, boss.hp, boss.maxHp);
+    }
 
-      float speed = 420.f;
-      if (_currentDifficulty == 0) speed = 320.f;
-      else if (_currentDifficulty == 2) speed = 520.f;
+    void maybeSpawnBoss() {
+      if (_bossActive || _killsThisStage < BYDOS_KILLS_PER_BOSS) return;
+      spawnBoss();
+    }
 
-      miss.velX = -speed;
-      miss.velY = 0.f;
+    void onBossDefeated() {
+      _bossActive = false;
+      ++_stageNumber;
+      _killsThisStage = 0;
+      _bydoSpawnTimer = 0.0f;
+      _enemyShootTimer = 0.0f;
+      _bossShootTimer = 0.0f;
+    }
 
-      if (_currentDifficulty == 2) {
-        float closestDist = 9999.f;
-        const ConnectedClient* target = nullptr;
-        for (const auto& [_, client] : _clients) {
-          if (!client.dead && client.posX < bydo.posX - 40.f) {
-            float dist = std::hypot(client.posX - bydo.posX, client.posY - bydo.posY);
-            if (dist < closestDist) {
-              closestDist = dist;
-              target = &client;
-            }
-          }
-        }
-        if (target) {
-          float angle = std::atan2(target->posY - bydo.posY,
-                                   bydo.posX - target->posX);
-          angle = std::clamp(angle, -0.52f, 0.52f);
-          miss.velX = -speed * std::cos(angle);
-          miss.velY = speed * std::sin(angle);
+    void spawnEnemyMissile(const ServerEntity& enemy) {
+      ServerEntity missile;
+      missile.id = _nextEntityId++;
+      missile.type = ServerEntityType::EnemyMissile;
+      missile.posX = enemy.posX - 10.0f;
+      missile.posY = enemy.posY + 14.0f;
+      float speed = _currentDifficulty == 0 ? 320.0f :
+        (_currentDifficulty == 2 ? 520.0f : 420.0f);
+      missile.velX = -speed;
+      if (_currentDifficulty == 2) aimEnemyMissile(missile, enemy, speed);
+      missile.hp = 1;
+      missile.maxHp = 1;
+      _entities[missile.id] = missile;
+      broadcastSpawnEntity(missile);
+    }
+
+    void aimEnemyMissile(ServerEntity& missile, const ServerEntity& enemy,
+                         float speed) const {
+      float closestDistance = std::numeric_limits<float>::max();
+      const ConnectedClient* target = nullptr;
+      for (const auto& [id, client] : _clients) {
+        if (client.dead || client.posX >= enemy.posX - 40.0f) continue;
+        const float distance = std::hypot(client.posX - enemy.posX,
+                                          client.posY - enemy.posY);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          target = &client;
         }
       }
+      if (!target) return;
+      const float angle = std::clamp(
+        std::atan2(target->posY - enemy.posY, enemy.posX - target->posX),
+        -0.52f, 0.52f);
+      missile.velX = -speed * std::cos(angle);
+      missile.velY = speed * std::sin(angle);
+    }
 
-      miss.hp = 1;
-      miss.maxHp = 1;
-      _entities[miss.id] = miss;
-      broadcastSpawnEntity(miss);
+    void spawnBossVolley(const ServerEntity& boss) {
+      for (const float angleDegrees : {-12.0f, 0.0f, 12.0f}) {
+        ServerEntity missile;
+        missile.id = _nextEntityId++;
+        missile.type = ServerEntityType::EnemyMissile;
+        missile.posX = boss.posX - 55.0f;
+        missile.posY = boss.posY + 35.0f;
+        const float angle = angleDegrees * 0.017453292519943295f;
+        const float speed = 440.0f + 30.0f * static_cast<float>(_stageNumber - 1);
+        missile.velX = -speed * std::cos(angle);
+        missile.velY = speed * std::sin(angle);
+        _entities[missile.id] = missile;
+        broadcastSpawnEntity(missile);
+      }
     }
 
     void checkCollisions(std::vector<network::NetworkId>& destroyed) {
-      std::vector<ServerEntity> bonuses;
-      for (auto& [entId, ent] : _entities) {
-        const bool entityDestroyed = std::find(
-          destroyed.begin(), destroyed.end(), entId) != destroyed.end();
-        if (entityDestroyed) continue;
-
-        if (ent.type == ServerEntityType::PlayerMissile) {
-          for (auto& [targetId, target] : _entities) {
-            const bool targetDestroyed = std::find(
-              destroyed.begin(), destroyed.end(), targetId) != destroyed.end();
-            if (target.type == ServerEntityType::Bydos && !targetDestroyed) {
-              const bool collided =
-                std::abs(ent.posX - target.posX) < 33.f &&
-                std::abs(ent.posY - target.posY) < 33.f;
-              if (collided) {
-                destroyed.push_back(entId);
-                target.hp--;
-                broadcastHealthUpdate(targetId, target.hp, target.maxHp);
-                if (target.hp <= 0) {
-                  destroyed.push_back(targetId);
-                  auto bonus = makeBonus(target.posX, target.posY);
-                  if (bonus) bonuses.push_back(*bonus);
-                }
-                break;
-              }
-            }
-          }
-        }
-
-        if (ent.type == ServerEntityType::EnemyMissile) {
-          for (auto& [clientId, client] : _clients) {
-            if (!client.dead) {
-              const bool collided =
-                std::abs(ent.posX - client.posX) < 33.f &&
-                std::abs(ent.posY - client.posY) < 17.f;
-              if (collided) {
-                destroyed.push_back(entId);
-                client.hp--;
-                broadcastHealthUpdate(client.id, client.hp, client.maxHp);
-                if (client.hp <= 0) {
-                  client.dead = true;
-                  client.deathTimer = 1.5f;
-                  broadcastHealthUpdate(client.id, 0, client.maxHp);
-                }
-                break;
-              }
-            }
-          }
-        }
-
-        if (ent.type == ServerEntityType::Bydos) {
-          for (auto& [clientId, client] : _clients) {
-            if (!client.dead) {
-              const bool collided =
-                std::abs(ent.posX - client.posX) < 33.f &&
-                std::abs(ent.posY - client.posY) < 25.f;
-              if (collided) {
-                destroyed.push_back(entId);
-                client.hp--;
-                broadcastHealthUpdate(client.id, client.hp, client.maxHp);
-                if (client.hp <= 0) {
-                  client.dead = true;
-                  client.deathTimer = 1.5f;
-                  broadcastHealthUpdate(client.id, 0, client.maxHp);
-                }
-                break;
-              }
-            }
-          }
+      std::vector<std::pair<float, float>> bonusDrops;
+      for (auto& [entityId, entity] : _entities) {
+        if (isMarkedDestroyed(destroyed, entityId)) continue;
+        if (isPlayerMissile(entity.type)) {
+          checkPlayerMissileCollision(entity, destroyed, bonusDrops);
+        } else if (isEnemyMissile(entity.type)) {
+          checkEnemyMissileCollision(entity, destroyed);
+        } else if (isBonus(entity.type)) {
+          checkBonusPickup(entity, destroyed);
+        } else if (entity.type == ServerEntityType::Bydos ||
+                   entity.type == ServerEntityType::Boss) {
+          checkRammingCollision(entity, destroyed, bonusDrops);
         }
       }
-      for (const auto& bonus : bonuses) {
-        _entities[bonus.id] = bonus;
-        broadcastSpawnEntity(bonus);
+      for (const auto& [x, y] : bonusDrops) spawnBonus(x, y);
+    }
+
+    void checkPlayerMissileCollision(
+      const ServerEntity& missile, std::vector<network::NetworkId>& destroyed,
+      std::vector<std::pair<float, float>>& bonusDrops) {
+      for (auto& [targetId, target] : _entities) {
+        if (targetId == missile.id || isMarkedDestroyed(destroyed, targetId)) continue;
+        if (target.type != ServerEntityType::Bydos &&
+            target.type != ServerEntityType::Boss) continue;
+        const float halfWidth = target.type == ServerEntityType::Boss ? 100.0f : 33.0f;
+        const float halfHeight = target.type == ServerEntityType::Boss ? 75.0f : 33.0f;
+        if (std::abs(missile.posX - target.posX) >= halfWidth ||
+            std::abs(missile.posY - target.posY) >= halfHeight) continue;
+        destroyed.push_back(missile.id);
+        target.hp -= missile.damage;
+        broadcastHealthUpdate(targetId, target.hp, target.maxHp);
+        if (target.hp > 0) break;
+        destroyed.push_back(targetId);
+        awardScore(missile.ownerId,
+                   target.type == ServerEntityType::Boss ? 1000u : 100u);
+        if (target.type == ServerEntityType::Bydos) {
+          ++_killsThisStage;
+          bonusDrops.emplace_back(target.posX, target.posY);
+        }
+        break;
       }
     }
 
-    std::optional<ServerEntity> makeBonus(float x, float y) {
-      int chance = 30;
-      if (_currentDifficulty == 0) chance = 40;
-      else if (_currentDifficulty == 2) chance = 20;
-      if ((rand() % 100) >= chance) return std::nullopt;
+    void checkEnemyMissileCollision(const ServerEntity& missile,
+                                    std::vector<network::NetworkId>& destroyed) {
+      for (auto& [id, client] : _clients) {
+        if (client.dead || std::abs(missile.posX - client.posX) >= 33.0f ||
+            std::abs(missile.posY - client.posY) >= 17.0f) continue;
+        destroyed.push_back(missile.id);
+        damagePlayer(client, 1);
+        break;
+      }
+    }
 
+    void checkBonusPickup(const ServerEntity& bonus,
+                          std::vector<network::NetworkId>& destroyed) {
+      for (auto& [id, client] : _clients) {
+        if (client.dead || std::abs(bonus.posX - client.posX) >= 28.0f ||
+            std::abs(bonus.posY - client.posY) >= 28.0f) continue;
+        destroyed.push_back(bonus.id);
+        applyBonus(client, bonus.type);
+        break;
+      }
+    }
+
+    void checkRammingCollision(
+      const ServerEntity& enemy, std::vector<network::NetworkId>& destroyed,
+      std::vector<std::pair<float, float>>& bonusDrops) {
+      for (auto& [id, client] : _clients) {
+        if (client.dead) continue;
+        const bool boss = enemy.type == ServerEntityType::Boss;
+        const float halfWidth = boss ? 100.0f : 33.0f;
+        const float halfHeight = boss ? 75.0f : 25.0f;
+        if (std::abs(enemy.posX - client.posX) >= halfWidth ||
+            std::abs(enemy.posY - client.posY) >= halfHeight) continue;
+        if (!boss) {
+          destroyed.push_back(enemy.id);
+          ++_killsThisStage;
+          bonusDrops.emplace_back(enemy.posX, enemy.posY);
+        }
+        damagePlayer(client, 1);
+        break;
+      }
+    }
+
+    void damagePlayer(ConnectedClient& client, int amount) {
+      if (client.dead || client.hitCooldown > 0.0f) return;
+      client.hitCooldown = 0.65f;
+      client.hp = std::max(0, client.hp - amount);
+      broadcastHealthUpdate(client.id, client.hp, client.maxHp);
+      if (client.hp != 0) return;
+      client.dead = true;
+      client.deathTimer = 1.5f;
+      client.velX = 0.0f;
+      client.velY = 0.0f;
+      client.shootPressed = false;
+      clearAugments(client);
+    }
+
+    void applyBonus(ConnectedClient& client, ServerEntityType type) {
+      switch (type) {
+        case ServerEntityType::BonusDouble:
+          if (client.shotPattern == 2) {
+            refreshShotPattern(client, 2);
+          } else {
+            refreshShotPattern(client, 1);
+          }
+          break;
+        case ServerEntityType::BonusTriple:
+          refreshShotPattern(client, 2);
+          break;
+        case ServerEntityType::BonusHeal: {
+          const int oldHealth = client.hp;
+          client.hp = std::min(client.maxHp, client.hp + 2);
+          if (client.hp != oldHealth)
+            broadcastHealthUpdate(client.id, client.hp, client.maxHp);
+          break;
+        }
+        case ServerEntityType::BonusDamage:
+          client.damageLevel = static_cast<std::uint8_t>(
+            std::min(2, static_cast<int>(client.damageLevel) + 1));
+          client.damageRemaining = AUGMENT_DURATION;
+          sendAugmentUpdate(client.id, 3, client.damageLevel,
+                            client.damageRemaining);
+          break;
+        default:
+          break;
+      }
+    }
+
+    void refreshShotPattern(ConnectedClient& client, std::uint8_t pattern) {
+      if (client.shotPattern != 0 && client.shotPattern != pattern)
+        sendAugmentUpdate(client.id, client.shotPattern, 0, 0.0f);
+      client.shotPattern = pattern;
+      client.shotPatternRemaining = AUGMENT_DURATION;
+      sendAugmentUpdate(client.id, pattern, 1, client.shotPatternRemaining);
+    }
+
+    void clearAugments(ConnectedClient& client) {
+      if (client.shotPattern != 0)
+        sendAugmentUpdate(client.id, client.shotPattern, 0, 0.0f);
+      if (client.damageLevel > 0)
+        sendAugmentUpdate(client.id, 3, 0, 0.0f);
+      client.shotPattern = 0;
+      client.shotPatternRemaining = 0.0f;
+      client.damageLevel = 0;
+      client.damageRemaining = 0.0f;
+    }
+
+    void sendActiveAugments(const ConnectedClient& client,
+                            const network::Endpoint& recipient) {
+      if (client.shotPattern != 0)
+        sendAugmentUpdate(client.id, client.shotPattern, 1,
+                          client.shotPatternRemaining, recipient);
+      if (client.damageLevel > 0)
+        sendAugmentUpdate(client.id, 3, client.damageLevel,
+                          client.damageRemaining, recipient);
+    }
+
+    void awardScore(network::NetworkId playerId, std::uint32_t points) {
+      auto it = _clients.find(playerId);
+      if (it == _clients.end() || points == 0) return;
+      const auto maximum = std::numeric_limits<std::uint32_t>::max();
+      it->second.score = it->second.score > maximum - points
+        ? maximum : it->second.score + points;
+      broadcastScoreUpdate(it->second);
+    }
+
+    void spawnBonus(float x, float y) {
+      const int chance = _currentDifficulty == 0 ? 40 :
+        (_currentDifficulty == 2 ? 20 : 30);
+      if (randomInt(0, 99) >= chance) return;
       ServerEntity bonus;
       bonus.id = _nextEntityId++;
-      bonus.type = static_cast<ServerEntityType>(4 + (rand() % 4));
+      bonus.type = static_cast<ServerEntityType>(randomInt(4, 7));
       bonus.posX = x;
       bonus.posY = y;
-      bonus.velX = -80.f;
-      bonus.velY = 0.f;
+      bonus.velX = -80.0f;
       bonus.hp = 1;
       bonus.maxHp = 1;
-      return bonus;
+      _entities[bonus.id] = bonus;
+      broadcastSpawnEntity(bonus);
+    }
+
+    template<typename T>
+    static void sortUnique(std::vector<T>& values) {
+      std::sort(values.begin(), values.end());
+      values.erase(std::unique(values.begin(), values.end()), values.end());
+    }
+
+    static bool isMarkedDestroyed(const std::vector<network::NetworkId>& ids,
+                                  network::NetworkId id) {
+      return std::find(ids.begin(), ids.end(), id) != ids.end();
+    }
+
+    static bool isPlayerMissile(ServerEntityType type) {
+      return type == ServerEntityType::PlayerMissile ||
+             type == ServerEntityType::PlayerMissileHeavy;
+    }
+
+    static bool isEnemyMissile(ServerEntityType type) {
+      return type == ServerEntityType::EnemyMissile;
+    }
+
+    static bool isBonus(ServerEntityType type) {
+      return type == ServerEntityType::BonusDouble ||
+             type == ServerEntityType::BonusTriple ||
+             type == ServerEntityType::BonusHeal ||
+             type == ServerEntityType::BonusDamage;
+    }
+
+    int randomInt(int minimum, int maximum) {
+      return std::uniform_int_distribution<int>(minimum, maximum)(_rng);
     }
 
     void broadcastSpawnEntity(const ServerEntity& ent) {
-      for (const auto& [id, client] : _clients) {
+      for (const auto& [id, client] : _clients)
         sendSpawnEntity(ent, client.endpoint);
+    }
+
+    void broadcastHealthUpdate(network::NetworkId netId, int hp, int maxHp) {
+      const auto health = static_cast<std::uint8_t>(std::clamp(hp, 0, 255));
+      const auto maximum = static_cast<std::uint8_t>(std::clamp(maxHp, 0, 255));
+      for (const auto& [id, client] : _clients)
+        sendHealthUpdate(netId, health, maximum, client.endpoint);
+    }
+
+    void sendAugmentUpdate(network::NetworkId netId, std::uint8_t augment,
+                           std::uint8_t level, float remaining) {
+      for (const auto& [id, client] : _clients) {
+        sendAugmentUpdate(netId, augment, level, remaining, client.endpoint);
       }
     }
 
-    void broadcastHealthUpdate(network::NetworkId netId, std::uint8_t hp, std::uint8_t maxHp) {
-      for (const auto& [id, client] : _clients) {
-        sendHealthUpdate(netId, hp, maxHp, client.endpoint);
-      }
+    void sendAugmentUpdate(network::NetworkId netId, std::uint8_t augment,
+                           std::uint8_t level, float remaining,
+                           const network::Endpoint& recipient) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::AugmentUpdate,
+        _outgoingSeq++, 10
+      };
+      network::PacketStreamWriter writer;
+      writer << header << netId << augment << level << remaining;
+      _socket.send(writer.getBuffer(), recipient);
+    }
+
+    void sendScoreUpdate(const ConnectedClient& client,
+                         const network::Endpoint& recipient) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::ScoreUpdate,
+        _outgoingSeq++, 8
+      };
+      network::PacketStreamWriter writer;
+      writer << header << client.id << client.score;
+      _socket.send(writer.getBuffer(), recipient);
+    }
+
+    void broadcastScoreUpdate(const ConnectedClient& client) {
+      for (const auto& [id, recipient] : _clients)
+        sendScoreUpdate(client, recipient.endpoint);
+    }
+
+    void broadcastDestroyEntity(network::NetworkId id) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::DestroyEntity,
+        _outgoingSeq++, sizeof(id)
+      };
+      network::PacketStreamWriter writer;
+      writer << header << id;
+      for (const auto& [clientId, client] : _clients)
+        _socket.send(writer.getBuffer(), client.endpoint);
     }
 
     void destroyEntity(network::NetworkId entId) {
-      _entities.erase(entId);
-      network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::DestroyEntity,
-        _outgoingSeq++, sizeof(entId)
-      };
-      network::PacketStreamWriter writer;
-      writer << header << entId;
-      for (const auto& [id, client] : _clients) {
-        _socket.send(writer.getBuffer(), client.endpoint);
-      }
+      const auto it = _entities.find(entId);
+      if (it == _entities.end()) return;
+      const ServerEntityType type = it->second.type;
+      _entities.erase(it);
+      broadcastDestroyEntity(entId);
+      if (type == ServerEntityType::Boss) onBossDefeated();
     }
 
     void broadcastGameState() {
@@ -658,11 +1004,17 @@ namespace rtype::server {
     std::unordered_map<network::NetworkId, ConnectedClient> _clients;
     std::unordered_map<network::NetworkId, ServerEntity> _entities;
     network::NetworkId _nextPlayerId{1000};
-    network::NetworkId _nextEntityId{1};
+    network::NetworkId _nextEntityId{2000};
     std::uint32_t& _outgoingSeq;
     std::uint8_t _currentDifficulty{1};
     float _bydoSpawnTimer{0.f};
     float _enemyShootTimer{0.f};
+    float _bossShootTimer{0.f};
+    std::uint32_t _stageNumber{1};
+    std::uint32_t _killsThisStage{0};
+    bool _bossActive{false};
+    std::mt19937 _rng;
+    static constexpr std::size_t MAX_ACTIVE_BYDOS = 12;
   };
 
 }

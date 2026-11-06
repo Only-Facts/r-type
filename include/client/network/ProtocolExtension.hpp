@@ -14,6 +14,7 @@ namespace rtype::network::ext {
   using AugmentId = std::uint8_t;
   using EntityType = std::uint8_t;
   constexpr EntityType ENTITY_PLAYER = 0;
+  constexpr EntityType ENTITY_BOSS = 9;
 }
 
 #endif // !RTYPE_CLIENT_PROTOCOLEXTENSION_HPP

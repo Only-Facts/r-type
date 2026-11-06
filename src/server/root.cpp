@@ -52,7 +52,6 @@ int main(int argc, const char *argv[]) {
 
   if (bits & (FAIL | ERROR | HELP)) [[ unlikely ]] { return (bits & (FAIL | ERROR)) ? FAIL : SUCCESS; }
 
-
   try {
     rtype::network::SFMLUdpSocket serverSocket;
     serverSocket.bind(static_cast<unsigned short>(port));

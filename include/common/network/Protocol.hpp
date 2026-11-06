@@ -24,7 +24,11 @@ namespace rtype::network {
     RoomJoinReq = 0x44,
     RoomJoinAck = 0x45,
     RoomLeaveReq = 0x46,
-    RoomLeaveAck = 0x47
+    RoomLeaveAck = 0x47,
+    SpawnEntity = 0x12,
+    HealthUpdate = 0x13,
+    AugmentUpdate = 0x14,
+    ScoreUpdate = 0x15
   };
 
   #pragma pack(push, 1)
