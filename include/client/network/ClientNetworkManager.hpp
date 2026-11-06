@@ -8,12 +8,16 @@
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
 #include "network/ProtocolExtension.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <deque>
+#include <unordered_set>
+#include <unordered_map>
+#include <cstring>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -58,12 +62,34 @@ namespace rtype::client {
       if (difficulty || skin || previousNetId) writer << difficulty.value_or(NO_PREFERENCE);
       if (skin || previousNetId) writer << skin.value_or(NO_PREFERENCE);
       if (previousNetId) writer << *previousNetId;
-      _socket.send(writer.getBuffer(), _serverEndpoint);
+      _connectPacket = writer.getBuffer();
+      _socket.send(_connectPacket, _serverEndpoint);
+      _connectRetryTimer = CONNECT_RETRY_INTERVAL;
+      _connectAttempts = 0;
       _isConnected = false;
+      _sessionToken = 0;
       _serverDifficulty.reset();
+      _receivedReliable.clear();
+      _receivedReliableOrder.clear();
+      _pendingPlayerSpawns.clear();
+      _pendingHealth.clear();
+      _pendingAugments.clear();
+      _lastHealthSequences.clear();
+      _lastAugmentSequences.clear();
+      _lastScoreSequences.clear();
+      _hasSyncSequence = false;
     }
 
-    void update([[maybe_unused]] float dt) {
+    void update(float dt) {
+      if (!_isConnected && !_connectPacket.empty() &&
+          _connectAttempts < MAX_CONNECT_RETRIES) {
+        _connectRetryTimer -= std::max(dt, 0.0f);
+        if (_connectRetryTimer <= 0.0f) {
+          _socket.send(_connectPacket, _serverEndpoint);
+          ++_connectAttempts;
+          _connectRetryTimer = CONNECT_RETRY_INTERVAL;
+        }
+      }
       processIncomingPackets();
     }
 
@@ -75,7 +101,12 @@ namespace rtype::client {
       };
 
       network::PacketStreamWriter payload;
-      payload << _localNetId << up << down << left << right << shoot;
+      payload << _localNetId << _sessionToken
+              << static_cast<std::uint8_t>(up)
+              << static_cast<std::uint8_t>(down)
+              << static_cast<std::uint8_t>(left)
+              << static_cast<std::uint8_t>(right)
+              << static_cast<std::uint8_t>(shoot);
 
       header.payloadSize = static_cast<std::uint16_t>(payload.getBuffer().size());
 
@@ -92,12 +123,14 @@ namespace rtype::client {
       if (!_isConnected) return;
 
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++, sizeof(_localNetId)
+        network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++,
+        static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
       };
       network::PacketStreamWriter writer;
-      writer << header << _localNetId;
+      writer << header << _localNetId << _sessionToken;
       _socket.send(writer.getBuffer(), _serverEndpoint);
       _isConnected = false;
+      _sessionToken = 0;
     }
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
@@ -115,6 +148,35 @@ namespace rtype::client {
       engine::Entity entity;
       network::ext::EntityType type;
     };
+
+    struct PendingHealth {
+      int health{0};
+      int maximum{0};
+      std::uint32_t sequence{0};
+    };
+
+    struct PendingAugment {
+      network::ext::AugmentId augment{0};
+      int level{0};
+      float remaining{0.0f};
+      std::uint32_t sequence{0};
+    };
+
+    struct PendingPlayerSpawn {
+      network::NetworkId netId{0};
+      float x{0.0f};
+      float y{0.0f};
+      std::uint8_t skin{NO_PREFERENCE};
+      std::uint32_t sequence{0};
+    };
+
+    void flushPendingPlayerSpawns() {
+      for (const auto& spawn : _pendingPlayerSpawns) {
+        spawnEntity(spawn.netId, network::ext::ENTITY_PLAYER,
+                    spawn.x, spawn.y, spawn.sequence);
+      }
+      _pendingPlayerSpawns.clear();
+    }
 
     void processIncomingPackets() {
       network::PacketData data;
@@ -140,23 +202,33 @@ namespace rtype::client {
       network::PacketHeader header{};
       reader >> header;
 
-      if (header.magic != network::PROTOCOL_MAGIC) return;
-      const bool isSync = header.type == network::PacketType::GameStateSync;
-      if (isSync && header.sequence <= _lastSyncSeq) return;
+      if (header.magic != network::PROTOCOL_MAGIC ||
+          header.payloadSize != data.size() - sizeof(header)) return;
+      if (header.type == network::PacketType::Ack) return;
+      if (isReliableServerPacket(header.type)) {
+        sendAcknowledgement(header.sequence);
+        if (!rememberReliableSequence(header.sequence)) return;
+      }
+      const bool isSync =
+        header.type == network::PacketType::GameStateSync ||
+        header.type == network::PacketType::GameStateSyncPacked ||
+        header.type == network::PacketType::GameStateSyncDelta;
+      if (isSync && !isSequenceNewer(header.sequence, _lastSyncSeq,
+                                     _hasSyncSequence)) return;
 
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
         network::ext::EntityType type;
         float x, y;
         reader >> netId >> type >> x >> y;
-        spawnEntity(netId, type, x, y);
+        spawnEntity(netId, type, x, y, header.sequence);
         return;
       }
       if (header.type == network::ext::HEALTH_UPDATE) {
         network::NetworkId netId;
         std::uint8_t health, maxHealth;
         reader >> netId >> health >> maxHealth;
-        updateHealth(netId, health, maxHealth);
+        updateHealth(netId, health, maxHealth, header.sequence);
         return;
       }
       if (header.type == network::ext::AUGMENT_UPDATE) {
@@ -165,20 +237,44 @@ namespace rtype::client {
         std::uint8_t level;
         float remaining;
         reader >> netId >> augment >> level >> remaining;
+        const auto key = augmentKey(netId, augment);
         auto it = _networkToEcs.find(netId);
-        if (it != _networkToEcs.end() && _onAugment)
-          _onAugment(it->second.entity, netId, it->second.type, augment, level, remaining);
+        if (it != _networkToEcs.end() && _onAugment) {
+          const auto last = _lastAugmentSequences.find(key);
+          if (last != _lastAugmentSequences.end() &&
+              !isSequenceNewer(header.sequence, last->second, true)) return;
+          _lastAugmentSequences[key] = header.sequence;
+          _pendingAugments.erase(key);
+          _onAugment(it->second.entity, netId, it->second.type, augment,
+                     level, remaining);
+        } else {
+          auto pending = _pendingAugments.find(key);
+          if (pending == _pendingAugments.end() ||
+              isSequenceNewer(header.sequence, pending->second.sequence, true)) {
+            _pendingAugments[key] = PendingAugment{
+              augment, level, remaining, header.sequence};
+          }
+        }
         return;
       }
       if (header.type == network::ext::SCORE_UPDATE) {
         network::NetworkId netId;
         std::uint32_t score;
         reader >> netId >> score;
+        const auto last = _lastScoreSequences.find(netId);
+        if (last != _lastScoreSequences.end() &&
+            !isSequenceNewer(header.sequence, last->second, true)) return;
+        _lastScoreSequences[netId] = header.sequence;
         if (_onScore) _onScore(netId, score);
         return;
       }
 
       switch (header.type) {
+        case network::PacketType::ConnectReject:
+          _connectPacket.clear();
+          _isConnected = false;
+          _pendingPlayerSpawns.clear();
+          break;
         case network::PacketType::ConnectAck: {
           reader >> _localNetId;
           if (reader.hasMoreData()) {
@@ -186,86 +282,232 @@ namespace rtype::client {
             reader >> difficulty;
             _serverDifficulty = difficulty;
           }
+          if (reader.hasMoreData()) reader >> _sessionToken;
+          if (_sessionToken == 0) return;
+          _connectPacket.clear();
           _isConnected = true;
+          flushPendingPlayerSpawns();
           break;
         }
         case network::PacketType::SpawnPlayer: {
-          network::NetworkId netId;
-          float x, y;
-          reader >> netId >> x >> y;
+          PendingPlayerSpawn spawn{};
+          spawn.sequence = header.sequence;
+          reader >> spawn.netId >> spawn.x >> spawn.y;
           if (reader.hasMoreData()) {
-            std::uint8_t skin = NO_PREFERENCE;
-            reader >> skin;
-            if (skin != NO_PREFERENCE) _playerSkins[netId] = skin;
+            spawn.skin = NO_PREFERENCE;
+            reader >> spawn.skin;
           }
-          spawnEntity(netId, network::ext::ENTITY_PLAYER, x, y);
+          if (spawn.skin != NO_PREFERENCE)
+            _playerSkins[spawn.netId] = spawn.skin;
+          if (!_isConnected) {
+            if (_pendingPlayerSpawns.size() < MAX_PENDING_PLAYER_SPAWNS)
+              _pendingPlayerSpawns.push_back(spawn);
+            break;
+          }
+          spawnEntity(spawn.netId, network::ext::ENTITY_PLAYER,
+                      spawn.x, spawn.y, spawn.sequence);
           break;
         }
         case network::PacketType::DestroyEntity: {
           network::NetworkId netId;
           reader >> netId;
-          destroyEntity(netId);
+          destroyEntity(netId, header.sequence);
           break;
         }
-        case network::PacketType::GameStateSync: {
-          std::uint16_t count;
+        case network::PacketType::GameStateSync:
+        case network::PacketType::GameStateSyncPacked:
+        case network::PacketType::GameStateSyncDelta: {
+          std::uint16_t count{};
           reader >> count;
+          constexpr std::uint16_t MAX_SNAPSHOT_COUNT = 256;
+          if (count > MAX_SNAPSHOT_COUNT) return;
+          const std::size_t stateSize =
+            header.type == network::PacketType::GameStateSync
+              ? sizeof(network::EntityStateData)
+              : sizeof(network::PackedEntityStateData);
+          if (reader.remaining() != static_cast<std::size_t>(count) * stateSize)
+            return;
           _snapshot.clear();
+          _snapshot.reserve(count);
           for (std::uint16_t i = 0; i < count; ++i) {
             network::EntityStateData state{};
-            reader >> state;
+            if (header.type != network::PacketType::GameStateSync) {
+              network::PackedEntityStateData packed{};
+              reader >> packed;
+              state = network::unpackEntityState(packed);
+            } else {
+              reader >> state;
+            }
             _snapshot.push_back(state);
           }
           for (const auto& state : _snapshot) updateEntityState(state);
           _lastSyncSeq = header.sequence;
+          _hasSyncSequence = true;
           break;
         }
         default: break;
       }
     }
 
-    void spawnEntity(network::NetworkId netId, network::ext::EntityType type, float x, float y) {
+    static constexpr float CONNECT_RETRY_INTERVAL = 0.5f;
+    static constexpr std::uint8_t MAX_CONNECT_RETRIES = 8;
+    static constexpr std::size_t MAX_RELIABLE_HISTORY = 512;
+    static constexpr std::size_t MAX_DESTROYED_HISTORY = 1024;
+    static constexpr std::size_t MAX_PENDING_PLAYER_SPAWNS = 4;
+
+    static bool isReliableServerPacket(network::PacketType type) {
+      switch (type) {
+        case network::PacketType::ConnectAck:
+        case network::PacketType::ConnectReject:
+        case network::PacketType::RoomListAck:
+        case network::PacketType::RoomCreateAck:
+        case network::PacketType::RoomJoinAck:
+        case network::PacketType::RoomLeaveAck:
+        case network::PacketType::SpawnPlayer:
+        case network::PacketType::DestroyEntity:
+        case network::PacketType::SpawnEntity:
+        case network::PacketType::HealthUpdate:
+        case network::PacketType::AugmentUpdate:
+        case network::PacketType::ScoreUpdate:
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    static bool isSequenceNewer(std::uint32_t candidate,
+                                std::uint32_t previous, bool initialized) {
+      if (!initialized) return true;
+      const std::uint32_t delta = candidate - previous;
+      return delta != 0 && delta < 0x80000000u;
+    }
+
+    static std::uint64_t augmentKey(network::NetworkId netId,
+                                    std::uint8_t augment) {
+      return (static_cast<std::uint64_t>(netId) << 8) | augment;
+    }
+
+    void sendAcknowledgement(std::uint32_t acknowledgedSequence) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::Ack,
+        _outgoingSeq++, sizeof(acknowledgedSequence)
+      };
+      network::PacketStreamWriter writer;
+      writer << header << acknowledgedSequence;
+      _socket.send(writer.getBuffer(), _serverEndpoint);
+    }
+
+    bool rememberReliableSequence(std::uint32_t sequence) {
+      if (_receivedReliable.contains(sequence)) return false;
+      _receivedReliable.insert(sequence);
+      _receivedReliableOrder.push_back(sequence);
+      if (_receivedReliableOrder.size() > MAX_RELIABLE_HISTORY) {
+        _receivedReliable.erase(_receivedReliableOrder.front());
+        _receivedReliableOrder.pop_front();
+      }
+      return true;
+    }
+
+    void spawnEntity(network::NetworkId netId, network::ext::EntityType type,
+                     float x, float y, std::uint32_t sequence) {
+      auto tombstone = _destroyedEntities.find(netId);
+      if (tombstone != _destroyedEntities.end()) {
+        if (!isSequenceNewer(sequence, tombstone->second, true)) return;
+        _destroyedEntities.erase(tombstone);
+      }
       if (_networkToEcs.find(netId) != _networkToEcs.end()) return;
 
       auto entity = _registry.createEntity();
-      bool isLocal = type == network::ext::ENTITY_PLAYER && netId == _localNetId;
-      _registry.addComponent<engine::TransformComponent>(entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
+      const bool isLocal = type == network::ext::ENTITY_PLAYER &&
+                           netId == _localNetId;
+      _registry.addComponent<engine::TransformComponent>(
+        entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
-
       _networkToEcs[netId] = RemoteEntity{entity, type};
       if (_onSpawn) _onSpawn(entity, netId, type, isLocal);
+
+      auto health = _pendingHealth.find(netId);
+      if (health != _pendingHealth.end()) {
+        if (isSequenceNewer(health->second.sequence, sequence, true))
+          updateHealth(netId, health->second.health, health->second.maximum,
+                       health->second.sequence);
+        _pendingHealth.erase(health);
+      }
+      for (std::uint8_t augmentId = 1; augmentId <= 3; ++augmentId) {
+        const auto key = augmentKey(netId, augmentId);
+        auto augment = _pendingAugments.find(key);
+        if (augment == _pendingAugments.end()) continue;
+        const auto last = _lastAugmentSequences.find(key);
+        const bool isLatest = last == _lastAugmentSequences.end() ||
+          isSequenceNewer(augment->second.sequence, last->second, true);
+        if (isLatest && isSequenceNewer(augment->second.sequence, sequence,
+                                        true) && _onAugment) {
+          _lastAugmentSequences[key] = augment->second.sequence;
+          _onAugment(entity, netId, type, augmentId,
+                     augment->second.level, augment->second.remaining);
+        }
+        _pendingAugments.erase(augment);
+      }
     }
 
-    void destroyEntity(network::NetworkId netId) {
+    void destroyEntity(network::NetworkId netId, std::uint32_t sequence) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
         if (_onDestroy) _onDestroy(it->second.entity, netId, it->second.type);
         _registry.destroyEntity(it->second.entity);
         _networkToEcs.erase(it);
-        _playerSkins.erase(netId);
       }
+      _playerSkins.erase(netId);
+      _pendingHealth.erase(netId);
+      _lastHealthSequences.erase(netId);
+      for (auto pending = _pendingAugments.begin();
+           pending != _pendingAugments.end();) {
+        if (static_cast<network::NetworkId>(pending->first >> 8) == netId)
+          pending = _pendingAugments.erase(pending);
+        else
+          ++pending;
+      }
+      for (auto last = _lastAugmentSequences.begin();
+           last != _lastAugmentSequences.end();) {
+        if (static_cast<network::NetworkId>(last->first >> 8) == netId)
+          last = _lastAugmentSequences.erase(last);
+        else
+          ++last;
+      }
+      _destroyedEntities[netId] = sequence;
+      if (_destroyedEntities.size() > MAX_DESTROYED_HISTORY)
+        _destroyedEntities.erase(_destroyedEntities.begin());
     }
 
-    void updateHealth(network::NetworkId netId, int health, int maxHealth) {
+    void updateHealth(network::NetworkId netId, int health, int maxHealth,
+                      std::uint32_t sequence) {
       auto it = _networkToEcs.find(netId);
-      if (it == _networkToEcs.end()) return;
-
+      if (it == _networkToEcs.end()) {
+        auto pending = _pendingHealth.find(netId);
+        if (pending == _pendingHealth.end() ||
+            isSequenceNewer(sequence, pending->second.sequence, true)) {
+          _pendingHealth[netId] = PendingHealth{health, maxHealth, sequence};
+        }
+        return;
+      }
+      const auto last = _lastHealthSequences.find(netId);
+      if (last != _lastHealthSequences.end() &&
+          !isSequenceNewer(sequence, last->second, true)) return;
+      _lastHealthSequences[netId] = sequence;
       const engine::Entity entity = it->second.entity;
       auto* component = _registry.getComponent<engine::HealthComponent>(entity);
       const int previous = component ? component->current : maxHealth;
       _registry.addComponent(entity, engine::HealthComponent{health, maxHealth});
-      if (_onHealth) _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
+      if (_onHealth)
+        _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
     }
 
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
-      if (it == _networkToEcs.end()) {
-        spawnEntity(state.netId, network::ext::ENTITY_PLAYER, state.posX, state.posY);
-        return;
-      }
-
-      auto* transform = _registry.getComponent<engine::TransformComponent>(it->second.entity);
+      if (it == _networkToEcs.end()) return;
+      auto* transform = _registry.getComponent<engine::TransformComponent>(
+        it->second.entity);
       if (transform) transform->targetPosition = {state.posX, state.posY};
     }
 
@@ -278,11 +520,25 @@ namespace rtype::client {
     ScoreCallback _onScore;
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
+    std::unordered_map<network::NetworkId, PendingHealth> _pendingHealth;
+    std::unordered_map<std::uint64_t, PendingAugment> _pendingAugments;
+    std::unordered_map<network::NetworkId, std::uint32_t> _lastHealthSequences;
+    std::unordered_map<std::uint64_t, std::uint32_t> _lastAugmentSequences;
+    std::unordered_map<network::NetworkId, std::uint32_t> _lastScoreSequences;
+    std::unordered_map<network::NetworkId, std::uint32_t> _destroyedEntities;
+    std::vector<PendingPlayerSpawn> _pendingPlayerSpawns;
     std::vector<network::EntityStateData> _snapshot;
 
     network::NetworkId _localNetId{0};
+    std::uint64_t _sessionToken{0};
+    network::PacketData _connectPacket;
+    float _connectRetryTimer{0.0f};
+    std::uint8_t _connectAttempts{0};
     std::uint32_t _outgoingSeq{1};
     std::uint32_t _lastSyncSeq{0};
+    bool _hasSyncSequence{false};
+    std::unordered_set<std::uint32_t> _receivedReliable;
+    std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;

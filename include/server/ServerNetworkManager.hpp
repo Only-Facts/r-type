@@ -2,15 +2,19 @@
 #define SERVERNETWORKMANAGER_HPP
 
 #include "GameRoom.hpp"
+#include "ReliableUdpQueue.hpp"
+#include "ServerMetrics.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <chrono>
+#include <cmath>
 #include <deque>
 #include <mutex>
 #include <thread>
 #include <string>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -34,13 +38,19 @@ namespace rtype::server {
   public:
     explicit ServerNetworkManager(network::INetworkSocket& socket,
                                   std::size_t maxRooms = 16,
-                                  std::size_t defaultCapacity = 4)
-      : _socket(socket), _maxRooms(std::clamp<std::size_t>(maxRooms, 1, 256)),
-        _defaultCapacity(std::clamp<std::size_t>(defaultCapacity, 1, 4)) {
+                                  std::size_t defaultCapacity = 4,
+                                  std::chrono::milliseconds emptyRoomTtl =
+                                    std::chrono::seconds(30))
+      : _socket(socket), _reliable(&_metrics),
+        _maxRooms(std::clamp<std::size_t>(maxRooms, 1, 128)),
+        _defaultCapacity(std::clamp<std::size_t>(defaultCapacity, 1, 4)),
+        _emptyRoomTtl(std::max(emptyRoomTtl,
+                               std::chrono::milliseconds::zero())) {
       _rooms.emplace(1, RoomEntry{
         std::make_unique<GameRoom>(
-          _socket, 1, _defaultCapacity, 1, false, _outgoingSeq),
-        0.0f
+          _socket, 1, _defaultCapacity, 1, false, _outgoingSeq,
+          &_reliable, &_metrics),
+        std::nullopt
       });
     }
 
@@ -62,22 +72,59 @@ namespace rtype::server {
 
     void update(float dt) {
       processIncomingPackets();
-      const float elapsed = std::max(dt, 0.0f);
+      const float elapsed = std::isfinite(dt) ? std::max(dt, 0.0f) : 0.0f;
+      _reliable.update(_socket, elapsed);
       for (auto& [id, entry] : _rooms) entry.room->update(elapsed);
       cleanupEmptyRooms(elapsed);
+      pruneRateLimits();
     }
 
     [[nodiscard]] std::size_t roomCount() const { return _rooms.size(); }
     [[nodiscard]] std::size_t droppedIncomingPackets() const {
       return _droppedIncomingPackets.load();
     }
+    [[nodiscard]] std::size_t pendingReliablePackets() const {
+      return _reliable.pendingCount();
+    }
+    [[nodiscard]] std::size_t retransmittedPackets() const {
+      return _reliable.retransmittedCount();
+    }
+    [[nodiscard]] std::size_t timedOutReliablePackets() const {
+      return _reliable.timedOutCount();
+    }
+    [[nodiscard]] ServerStats stats() const {
+      ServerStats result;
+      result.receivedDatagrams = _metrics.receivedDatagrams.load();
+      result.receivedBytes = _metrics.receivedBytes.load();
+      result.sentDatagrams = _metrics.sentDatagrams.load();
+      result.sentBytes = _metrics.sentBytes.load();
+      result.malformedPackets = _metrics.malformedPackets.load();
+      result.rejectedPackets = _metrics.rejectedPackets.load();
+      result.rateLimitedPackets = _metrics.rateLimitedPackets.load();
+      result.receiveQueueDrops = _metrics.receiveQueueDrops.load();
+      result.reliableQueueDrops = _metrics.reliableQueueDrops.load();
+      result.reliablePending = _reliable.pendingCount();
+      result.reliableAcknowledged = _reliable.acknowledgedCount();
+      result.reliableRetransmitted = _reliable.retransmittedCount();
+      result.reliableTimedOut = _reliable.timedOutCount();
+      result.rooms = _rooms.size();
+      for (const auto& [id, entry] : _rooms) {
+        result.players += entry.room->playerCount();
+        result.droppedSimulationSeconds +=
+          entry.room->droppedSimulationSeconds();
+      }
+      return result;
+    }
 
   private:
     static constexpr std::uint32_t DEFAULT_ROOM_ID = 1;
-    static constexpr float EMPTY_ROOM_TTL = 30.0f;
     static constexpr std::uint8_t MAX_ROOM_PLAYERS = 4;
     static constexpr std::size_t MAX_QUEUED_PACKETS = 4096;
     static constexpr std::size_t MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+    static constexpr std::size_t MAX_DATAGRAM_SIZE = 1200;
+    static constexpr std::size_t MAX_RATE_LIMIT_ENDPOINTS = 1024;
+    static constexpr float PACKET_RATE = 90.0f;
+    static constexpr float PACKET_BURST = 120.0f;
 
     struct ReceivedDatagram {
       network::PacketData data;
@@ -86,7 +133,22 @@ namespace rtype::server {
 
     struct RoomEntry {
       std::unique_ptr<GameRoom> room;
-      float emptyTime{0.0f};
+      std::optional<std::chrono::steady_clock::time_point> emptySince;
+    };
+
+    struct RecentLeave {
+      network::NetworkId playerId{0};
+      std::uint64_t sessionToken{0};
+      std::uint32_t roomId{0};
+      std::chrono::steady_clock::time_point expires;
+    };
+
+    struct RateLimitState {
+      float tokens{PACKET_BURST};
+      std::chrono::steady_clock::time_point updated{
+        std::chrono::steady_clock::now()};
+      std::chrono::steady_clock::time_point lastSeen{
+        std::chrono::steady_clock::now()};
     };
 
     void processIncomingPackets() {
@@ -104,6 +166,7 @@ namespace rtype::server {
         try {
           dispatchPacket(datagram.data, datagram.sender);
         } catch (const RtypeError&) {
+          _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
       }
@@ -113,9 +176,11 @@ namespace rtype::server {
       network::PacketData data;
       network::Endpoint sender;
       while (_socket.receive(data, sender)) {
+        _metrics.recordReceive(data.size());
         try {
           dispatchPacket(data, sender);
         } catch (const RtypeError&) {
+          _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
       }
@@ -125,14 +190,27 @@ namespace rtype::server {
       while (!stop.stop_requested()) {
         network::PacketData data;
         network::Endpoint sender;
-        if (!_socket.receive(data, sender)) {
+        try {
+          if (!_socket.receive(data, sender)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+          }
+        } catch (...) {
+          ++_droppedIncomingPackets;
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          continue;
+        }
+        _metrics.recordReceive(data.size());
+        if (data.size() > MAX_DATAGRAM_SIZE) {
+          ++_droppedIncomingPackets;
+          _metrics.receiveQueueDrops.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
         std::lock_guard<std::mutex> lock(_queueMutex);
         if (_pendingPackets.size() >= MAX_QUEUED_PACKETS ||
             data.size() > MAX_QUEUED_BYTES - _pendingBytes) {
           ++_droppedIncomingPackets;
+          _metrics.receiveQueueDrops.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
         _pendingBytes += data.size();
@@ -142,15 +220,46 @@ namespace rtype::server {
 
     void dispatchPacket(const network::PacketData& data,
                         const network::Endpoint& sender) {
-      if (data.size() < sizeof(network::PacketHeader)) return;
+      if (data.size() < sizeof(network::PacketHeader) ||
+          data.size() > MAX_DATAGRAM_SIZE) {
+        ++_droppedIncomingPackets;
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       network::PacketStreamReader reader(data);
       network::PacketHeader header{};
       reader >> header;
-      if (header.magic != network::PROTOCOL_MAGIC) return;
-      if (header.payloadSize != data.size() - sizeof(header)) return;
+      if (header.magic != network::PROTOCOL_MAGIC ||
+          header.payloadSize != data.size() - sizeof(header)) {
+        ++_droppedIncomingPackets;
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      if (!allowPacket(sender)) {
+        ++_droppedIncomingPackets;
+        _metrics.rateLimitedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+
+      if (header.type == network::PacketType::Ack) {
+        if (header.payloadSize != sizeof(std::uint32_t)) {
+          _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+        std::uint32_t acknowledgedSequence{};
+        reader >> acknowledgedSequence;
+        _reliable.acknowledge(sender, acknowledgedSequence);
+        return;
+      }
 
       switch (header.type) {
         case network::PacketType::ConnectReq:
+          if (header.payloadSize != 0 && header.payloadSize != 1 &&
+              header.payloadSize != 2 && header.payloadSize != 6) {
+            _metrics.malformedPackets.fetch_add(1,
+                                                std::memory_order_relaxed);
+            return;
+          }
           handleDefaultConnect(data, sender);
           break;
         case network::PacketType::RoomListReq:
@@ -165,11 +274,29 @@ namespace rtype::server {
         case network::PacketType::RoomLeaveReq:
           handleLeave(reader, sender, header.payloadSize);
           break;
-        case network::PacketType::Disconnect:
+        case network::PacketType::PlayerInput:
+          if (header.payloadSize != sizeof(network::NetworkId) +
+              sizeof(std::uint64_t) + 5) {
+            _metrics.malformedPackets.fetch_add(1,
+                                                std::memory_order_relaxed);
+            return;
+          }
           routeToExistingRoom(data, sender);
           break;
-        default:
+        case network::PacketType::Disconnect:
+          if (header.payloadSize != sizeof(network::NetworkId) +
+              sizeof(std::uint64_t)) {
+            _metrics.malformedPackets.fetch_add(1,
+                                                std::memory_order_relaxed);
+            return;
+          }
           routeToExistingRoom(data, sender);
+          break;
+        case network::PacketType::Ping:
+          handlePing(reader, header.payloadSize, sender);
+          break;
+        default:
+          _metrics.rejectedPackets.fetch_add(1, std::memory_order_relaxed);
           break;
       }
     }
@@ -194,7 +321,10 @@ namespace rtype::server {
 
     void handleRoomList(const network::Endpoint& sender,
                         std::uint16_t payloadSize) {
-      if (payloadSize != 0) return;
+      if (payloadSize != 0) {
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       network::PacketStreamWriter payload;
       const auto infos = roomInfos();
       payload << static_cast<std::uint16_t>(infos.size());
@@ -208,7 +338,10 @@ namespace rtype::server {
     void handleRoomCreate(network::PacketStreamReader& reader,
                           const network::Endpoint& sender,
                           std::uint16_t payloadSize) {
-      if (payloadSize != 2) return;
+      if (payloadSize != 2) {
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       if (findRoom(sender)) {
         sendRoomResult(network::PacketType::RoomCreateAck, 0, 1, sender);
         return;
@@ -239,8 +372,9 @@ namespace rtype::server {
       }
       _rooms.emplace(id, RoomEntry{
         std::make_unique<GameRoom>(
-          _socket, id, capacity, difficulty, true, _outgoingSeq),
-        0.0f
+          _socket, id, capacity, difficulty, true, _outgoingSeq,
+          &_reliable, &_metrics),
+        std::chrono::steady_clock::now()
       });
       _pendingCreates[key] = id;
       sendRoomResult(network::PacketType::RoomCreateAck, id, 0, sender);
@@ -249,7 +383,10 @@ namespace rtype::server {
     void handleRoomJoin(network::PacketStreamReader& reader,
                         const network::Endpoint& sender,
                         std::uint16_t payloadSize) {
-      if (payloadSize != 10) return;
+      if (payloadSize != 10) {
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       std::uint32_t roomId{};
       std::uint8_t difficulty{};
       std::uint8_t skin{};
@@ -280,39 +417,77 @@ namespace rtype::server {
       network::PacketStreamWriter connect;
       connect << connectHeader << difficulty << skin << previousId;
       it->second.room->handlePacket(connect.getBuffer(), sender);
-      it->second.emptyTime = 0.0f;
+      it->second.emptySince.reset();
       _pendingCreates.erase(endpointKey(sender));
     }
 
     void handleLeave(network::PacketStreamReader& reader,
                      const network::Endpoint& sender,
                      std::uint16_t payloadSize) {
-      if (payloadSize != sizeof(network::NetworkId)) return;
+      if (payloadSize != sizeof(network::NetworkId) + sizeof(std::uint64_t)) {
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       network::NetworkId playerId{};
-      reader >> playerId;
+      std::uint64_t sessionToken{};
+      reader >> playerId >> sessionToken;
+      const std::string key = endpointKey(sender);
+      const auto now = std::chrono::steady_clock::now();
+      auto recent = _recentLeaves.find(key);
+      if (recent != _recentLeaves.end() && recent->second.expires > now &&
+          recent->second.playerId == playerId &&
+          recent->second.sessionToken == sessionToken) {
+        sendRoomResult(network::PacketType::RoomLeaveAck,
+                       recent->second.roomId, 0, sender);
+        return;
+      }
       GameRoom* room = findRoom(sender);
-      if (!room || !room->containsClient(playerId, sender)) {
+      if (!room || !room->containsClient(playerId, sender) ||
+          !room->validateSession(playerId, sender, sessionToken)) {
         sendRoomResult(network::PacketType::RoomLeaveAck,
                        room ? room->id() : 0, 1, sender);
         return;
       }
+      const std::uint32_t roomId = room->id();
       network::PacketHeader disconnectHeader{
         network::PROTOCOL_MAGIC, network::PacketType::Disconnect, 0,
-        static_cast<std::uint16_t>(sizeof(playerId))
+        static_cast<std::uint16_t>(sizeof(playerId) + sizeof(sessionToken))
       };
       network::PacketStreamWriter disconnect;
-      disconnect << disconnectHeader << playerId;
+      disconnect << disconnectHeader << playerId << sessionToken;
       room->handlePacket(disconnect.getBuffer(), sender);
-      sendRoomResult(network::PacketType::RoomLeaveAck, room->id(), 0, sender);
+      _recentLeaves[key] = RecentLeave{
+        playerId, sessionToken, roomId, now + std::chrono::seconds(10)
+      };
+      sendRoomResult(network::PacketType::RoomLeaveAck, roomId, 0, sender);
+    }
+
+    void handlePing(network::PacketStreamReader& reader,
+                    std::uint16_t payloadSize,
+                    const network::Endpoint& sender) {
+      if (payloadSize != sizeof(std::uint64_t)) {
+        _metrics.malformedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      std::uint64_t timestamp{};
+      reader >> timestamp;
+      network::PacketStreamWriter payload;
+      payload << timestamp;
+      sendPacket(network::PacketType::Pong, payload.getBuffer(), sender);
     }
 
     void routeToExistingRoom(const network::PacketData& data,
                              const network::Endpoint& sender) {
-      if (GameRoom* room = findRoom(sender)) room->handlePacket(data, sender);
+      GameRoom* room = findRoom(sender);
+      if (!room) {
+        _metrics.rejectedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      room->handlePacket(data, sender);
     }
 
     static std::string endpointKey(const network::Endpoint& endpoint) {
-      return endpoint.address + ":" + std::to_string(endpoint.port);
+      return endpoint.address + '\x1f' + std::to_string(endpoint.port);
     }
 
     GameRoom* findRoom(const network::Endpoint& endpoint) {
@@ -353,29 +528,38 @@ namespace rtype::server {
       return result;
     }
 
-    void cleanupEmptyRooms(float dt) {
+    void cleanupEmptyRooms(float) {
+      const auto now = std::chrono::steady_clock::now();
       for (auto it = _rooms.begin(); it != _rooms.end();) {
-        if (it->first == DEFAULT_ROOM_ID || !it->second.room->isEmpty()) {
-          it->second.emptyTime = 0.0f;
+        if (it->first == DEFAULT_ROOM_ID) {
           ++it;
           continue;
         }
-        it->second.emptyTime += std::max(dt, 0.0f);
-        if (it->second.emptyTime >= EMPTY_ROOM_TTL) {
+        if (!it->second.room->isEmpty()) {
+          it->second.emptySince.reset();
+          ++it;
+          continue;
+        }
+        if (!it->second.emptySince) it->second.emptySince = now;
+        if (now - *it->second.emptySince >= _emptyRoomTtl) {
           const auto expiredId = it->first;
           it = _rooms.erase(it);
           for (auto pending = _pendingCreates.begin();
                pending != _pendingCreates.end();) {
-            if (pending->second == expiredId) pending = _pendingCreates.erase(pending);
-            else ++pending;
+            if (pending->second == expiredId)
+              pending = _pendingCreates.erase(pending);
+            else
+              ++pending;
           }
-        } else ++it;
+        } else {
+          ++it;
+        }
       }
     }
 
     void resetEmptyTimer(std::uint32_t roomId) {
       auto it = _rooms.find(roomId);
-      if (it != _rooms.end()) it->second.emptyTime = 0.0f;
+      if (it != _rooms.end()) it->second.emptySince.reset();
     }
 
     void sendConnectReject(const network::Endpoint& recipient,
@@ -396,7 +580,11 @@ namespace rtype::server {
     void sendPacket(network::PacketType type,
                     const network::PacketData& payload,
                     const network::Endpoint& recipient) {
-      if (payload.size() > UINT16_MAX) return;
+      if (payload.size() > UINT16_MAX ||
+          payload.size() + sizeof(network::PacketHeader) > MAX_DATAGRAM_SIZE) {
+        _metrics.rejectedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       network::PacketHeader header{
         network::PROTOCOL_MAGIC, type, _outgoingSeq++,
         static_cast<std::uint16_t>(payload.size())
@@ -405,21 +593,64 @@ namespace rtype::server {
       writer << header;
       auto packet = writer.getBuffer();
       packet.insert(packet.end(), payload.begin(), payload.end());
-      _socket.send(packet, recipient);
+      if (ReliableUdpQueue::isReliable(type)) {
+        _reliable.send(_socket, packet, recipient);
+      } else {
+        _socket.send(packet, recipient);
+        _metrics.recordSend(packet.size());
+      }
+    }
+
+    bool allowPacket(const network::Endpoint& endpoint) {
+      const auto now = std::chrono::steady_clock::now();
+      const std::string key = endpointKey(endpoint);
+      auto it = _rateLimits.find(key);
+      if (it == _rateLimits.end()) {
+        if (_rateLimits.size() >= MAX_RATE_LIMIT_ENDPOINTS) return false;
+        it = _rateLimits.emplace(key, RateLimitState{}).first;
+      }
+      auto& state = it->second;
+      const float elapsed = std::chrono::duration<float>(
+        now - state.updated).count();
+      state.tokens = std::min(PACKET_BURST,
+                              state.tokens + elapsed * PACKET_RATE);
+      state.updated = now;
+      state.lastSeen = now;
+      if (state.tokens < 1.0f) return false;
+      state.tokens -= 1.0f;
+      return true;
+    }
+
+    void pruneRateLimits() {
+      const auto now = std::chrono::steady_clock::now();
+      for (auto it = _rateLimits.begin(); it != _rateLimits.end();) {
+        const auto age = now - it->second.lastSeen;
+        if (age > std::chrono::minutes(1)) it = _rateLimits.erase(it);
+        else ++it;
+      }
+      for (auto it = _recentLeaves.begin(); it != _recentLeaves.end();) {
+        if (it->second.expires <= now) it = _recentLeaves.erase(it);
+        else ++it;
+      }
     }
 
     network::INetworkSocket& _socket;
+    ServerMetrics _metrics;
+    ReliableUdpQueue _reliable;
     std::uint32_t _outgoingSeq{1};
     std::unordered_map<std::uint32_t, RoomEntry> _rooms;
     std::size_t _maxRooms{16};
     std::size_t _defaultCapacity{4};
+    std::chrono::milliseconds _emptyRoomTtl{std::chrono::seconds(30)};
     std::uint32_t _nextRoomId{2};
     std::unordered_map<std::string, std::uint32_t> _pendingCreates;
+    std::unordered_map<std::string, RecentLeave> _recentLeaves;
     std::jthread _receiver;
     std::mutex _queueMutex;
     std::deque<ReceivedDatagram> _pendingPackets;
     std::size_t _pendingBytes{0};
     std::atomic<std::size_t> _droppedIncomingPackets{0};
+    std::unordered_map<std::string, RateLimitState> _rateLimits;
   };
 
 }
