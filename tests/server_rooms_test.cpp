@@ -52,9 +52,10 @@ public:
 };
 
 static network::PacketData packet(network::PacketType type,
-                                  const network::PacketData& payload = {}) {
+                                  const network::PacketData& payload = {},
+                                  std::uint32_t sequence = 1) {
   network::PacketHeader header{
-    network::PROTOCOL_MAGIC, type, 1,
+    network::PROTOCOL_MAGIC, type, sequence,
     static_cast<std::uint16_t>(payload.size())
   };
   network::PacketStreamWriter writer;
@@ -211,13 +212,11 @@ static void testRoomCapacityAndIsolation() {
   }
   assert(rejectedThird);
 
-  socket.clearSent();
-  manager.update(0.016f);
   const auto hasSync = [&socket](unsigned short port) {
     return std::any_of(socket.sent.begin(), socket.sent.end(),
       [port](const auto& sent) {
         return sent.endpoint.port == port &&
-               packetType(sent) == network::PacketType::GameStateSync;
+               packetType(sent) == network::PacketType::GameStateSyncPacked;
       });
   };
   assert(hasSync(first.port));
@@ -231,7 +230,6 @@ static void testRoomCapacityAndIsolation() {
     network::PacketHeader header{};
     reader >> header;
     if (header.sequence == previousSequence) {
-      // A room broadcast reuses the same datagram for every recipient.
       assert(sent.data == previousPacket);
       continue;
     }
@@ -240,7 +238,7 @@ static void testRoomCapacityAndIsolation() {
     previousPacket = sent.data;
   }
   for (const auto& sent : socket.sent) {
-    if (packetType(sent) != network::PacketType::GameStateSync) continue;
+    if (packetType(sent) != network::PacketType::GameStateSyncPacked) continue;
     if (sent.endpoint.port == first.port || sent.endpoint.port == second.port)
       assert(snapshotEntityCount(sent) == 2);
     if (sent.endpoint.port == creator.port)
@@ -248,12 +246,18 @@ static void testRoomCapacityAndIsolation() {
   }
 }
 
-static network::NetworkId connectAckId(const MockSocket::SentPacket& sent) {
+struct ConnectInfo {
+  network::NetworkId playerId{0};
+  std::uint64_t sessionToken{0};
+};
+
+static ConnectInfo connectInfo(const MockSocket::SentPacket& sent) {
   network::PacketStreamReader reader(sent.data);
   network::PacketHeader header{};
-  network::NetworkId playerId{};
-  reader >> header >> playerId;
-  return playerId;
+  ConnectInfo result;
+  std::uint8_t difficulty{};
+  reader >> header >> result.playerId >> difficulty >> result.sessionToken;
+  return result;
 }
 
 static void testLeaveAndRejoinRoom() {
@@ -273,11 +277,20 @@ static void testLeaveAndRejoinRoom() {
     return packetType(sent) == network::PacketType::ConnectAck;
   });
   assert(ack != socket.sent.end());
-  const auto playerId = connectAckId(*ack);
+  const auto connected = connectInfo(*ack);
 
   socket.clearSent();
   network::PacketStreamWriter leavePayload;
-  leavePayload << playerId;
+  leavePayload << connected.playerId << connected.sessionToken;
+  socket.enqueue(packet(network::PacketType::RoomLeaveReq,
+                        leavePayload.getBuffer()), player);
+  manager.update(0.016f);
+  assert(std::any_of(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+    return packetType(sent) == network::PacketType::RoomLeaveAck &&
+           roomStatus(sent) == 0;
+  }));
+
+  socket.clearSent();
   socket.enqueue(packet(network::PacketType::RoomLeaveReq,
                         leavePayload.getBuffer()), player);
   manager.update(0.016f);
@@ -310,7 +323,8 @@ static void testEmptyRoomStopsAndResetsSimulation() {
     return packetType(sent) == network::PacketType::ConnectAck;
   });
   assert(ack != socket.sent.end());
-  const auto playerId = connectAckId(*ack);
+  const auto connected = connectInfo(*ack);
+  const auto playerId = connected.playerId;
 
   socket.clearSent();
   for (int tick = 0; tick < 5; ++tick) manager.update(0.25f);
@@ -320,7 +334,7 @@ static void testEmptyRoomStopsAndResetsSimulation() {
 
   socket.clearSent();
   network::PacketStreamWriter leavePayload;
-  leavePayload << playerId;
+  leavePayload << playerId << connected.sessionToken;
   socket.enqueue(packet(network::PacketType::RoomLeaveReq,
                         leavePayload.getBuffer()), player);
   manager.update(0.016f);
@@ -359,27 +373,72 @@ static void testNonBooleanInputBytesAreRejected() {
     return packetType(sent) == network::PacketType::ConnectAck;
   });
   assert(ack != socket.sent.end());
-  const auto playerId = connectAckId(*ack);
+  const auto connected = connectInfo(*ack);
 
-  network::PacketStreamWriter inputPayload;
-  inputPayload << playerId << std::uint8_t{2} << std::uint8_t{0}
-               << std::uint8_t{0} << std::uint8_t{0} << std::uint8_t{0};
+  network::PacketStreamWriter rightPayload;
+  rightPayload << connected.playerId << connected.sessionToken
+               << std::uint8_t{0} << std::uint8_t{0}
+               << std::uint8_t{0} << std::uint8_t{1} << std::uint8_t{0};
   socket.clearSent();
   socket.enqueue(packet(network::PacketType::PlayerInput,
-                        inputPayload.getBuffer()), client);
-  manager.update(0.016f);
-  auto statePacket = std::find_if(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
-    return packetType(sent) == network::PacketType::GameStateSync;
+                        rightPayload.getBuffer(), 2), client);
+  manager.update(0.034f);
+  auto moving = std::find_if(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+    return packetType(sent) == network::PacketType::GameStateSyncDelta;
   });
-  assert(statePacket != socket.sent.end());
-  network::PacketStreamReader reader(statePacket->data);
-  network::PacketHeader header{};
-  std::uint16_t count{};
-  network::EntityStateData state{};
-  reader >> header >> count >> state;
-  assert(count == 1);
-  assert(state.netId == playerId);
-  assert(state.velX == 0.0f && state.velY == 0.0f);
+  assert(moving != socket.sent.end());
+
+  network::PacketStreamWriter neutralPayload;
+  neutralPayload << connected.playerId << connected.sessionToken
+                 << std::uint8_t{0} << std::uint8_t{0}
+                 << std::uint8_t{0} << std::uint8_t{0} << std::uint8_t{0};
+  socket.clearSent();
+  socket.enqueue(packet(network::PacketType::PlayerInput,
+                        neutralPayload.getBuffer(), 3), client);
+  manager.update(0.034f);
+  auto stopped = std::find_if(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+    return packetType(sent) == network::PacketType::GameStateSyncDelta;
+  });
+  assert(stopped != socket.sent.end());
+  network::PacketStreamReader stoppedReader(stopped->data);
+  network::PacketHeader stoppedHeader{};
+  std::uint16_t stoppedCount{};
+  network::PackedEntityStateData stoppedState{};
+  stoppedReader >> stoppedHeader >> stoppedCount >> stoppedState;
+  assert(stoppedCount == 1);
+  assert(network::unpackEntityState(stoppedState).velX == 0.0f);
+
+  network::PacketStreamWriter invalidPayload;
+  invalidPayload << connected.playerId << connected.sessionToken
+                 << std::uint8_t{2} << std::uint8_t{0}
+                 << std::uint8_t{0} << std::uint8_t{0} << std::uint8_t{0};
+  socket.clearSent();
+  socket.enqueue(packet(network::PacketType::PlayerInput,
+                        invalidPayload.getBuffer(), 4), client);
+  manager.update(0.034f);
+  const auto changedState = std::find_if(
+    socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+      return packetType(sent) == network::PacketType::GameStateSyncDelta ||
+             packetType(sent) == network::PacketType::GameStateSyncPacked;
+    });
+  assert(changedState == socket.sent.end());
+  assert(manager.stats().malformedPackets == 1);
+
+  network::PacketStreamWriter forgedPayload;
+  forgedPayload << connected.playerId << (connected.sessionToken + 1)
+                << std::uint8_t{0} << std::uint8_t{0}
+                << std::uint8_t{0} << std::uint8_t{0} << std::uint8_t{0};
+  socket.clearSent();
+  socket.enqueue(packet(network::PacketType::PlayerInput,
+                        forgedPayload.getBuffer(), 5), client);
+  manager.update(0.034f);
+  assert(manager.stats().rejectedPackets == 1);
+  const auto forgedState = std::find_if(
+    socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+      return packetType(sent) == network::PacketType::GameStateSyncDelta ||
+             packetType(sent) == network::PacketType::GameStateSyncPacked;
+    });
+  assert(forgedState == socket.sent.end());
 }
 
 static void testMalformedPacketIsIgnored() {
@@ -391,17 +450,40 @@ static void testMalformedPacketIsIgnored() {
   socket.enqueue(std::move(malformed), client);
   manager.update(0.016f);
   assert(socket.sent.empty());
+  assert(manager.stats().malformedPackets == 1);
+}
+
+
+static void testPlayerInputRoutingRejectsUnknownAndMalformedPeers() {
+  MockSocket socket;
+  server::ServerNetworkManager manager(socket);
+  const network::Endpoint unknown{"127.0.0.1", 5280};
+
+  network::PacketStreamWriter validPayload;
+  validPayload << network::NetworkId{1000} << std::uint64_t{1}
+               << std::uint8_t{0} << std::uint8_t{0}
+               << std::uint8_t{0} << std::uint8_t{0} << std::uint8_t{0};
+  socket.enqueue(packet(network::PacketType::PlayerInput,
+                        validPayload.getBuffer()), unknown);
+  manager.update(0.016f);
+  assert(manager.stats().rejectedPackets == 1);
+
+  socket.enqueue(packet(network::PacketType::PlayerInput), unknown);
+  manager.update(0.016f);
+  assert(manager.stats().malformedPackets == 1);
 }
 
 static void testEmptyRoomCleanup() {
   MockSocket socket;
-  server::ServerNetworkManager manager(socket);
+  server::ServerNetworkManager manager(
+    socket, 16, 4, std::chrono::milliseconds(1));
   const network::Endpoint owner{"127.0.0.1", 5300};
   socket.enqueue(packet(network::PacketType::RoomCreateReq,
                         payloadRoomCreate(2, 1)), owner);
   manager.update(0.016f);
   assert(manager.roomCount() == 2);
-  for (int tick = 0; tick < 120; ++tick) manager.update(0.25f);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  manager.update(0.016f);
   assert(manager.roomCount() == 1);
 }
 
@@ -420,6 +502,44 @@ static void testReceiveThreadDoesNotOwnSimulationState() {
   assert(manager.roomCount() == 2);
   assert(!socket.sent.empty());
   assert(packetType(socket.sent.front()) == network::PacketType::RoomCreateAck);
+}
+
+
+static network::PacketData acknowledgement(std::uint32_t sequence) {
+  network::PacketStreamWriter payload;
+  payload << sequence;
+  return packet(network::PacketType::Ack, payload.getBuffer());
+}
+
+static void testServerReliableAcknowledgementFlow() {
+  MockSocket socket;
+  server::ServerNetworkManager manager(socket);
+  const network::Endpoint owner{"127.0.0.1", 5450};
+  const network::Endpoint stranger{"127.0.0.1", 5451};
+  socket.enqueue(packet(network::PacketType::RoomCreateReq,
+                        payloadRoomCreate(2, 1)), owner);
+  manager.update(0.016f);
+  assert(manager.pendingReliablePackets() == 1);
+  assert(socket.sent.size() == 1);
+
+  network::PacketStreamReader reader(socket.sent.front().data);
+  network::PacketHeader header{};
+  reader >> header;
+  assert(header.type == network::PacketType::RoomCreateAck);
+
+  socket.enqueue(acknowledgement(header.sequence), stranger);
+  manager.update(0.016f);
+  assert(manager.pendingReliablePackets() == 1);
+
+  manager.update(0.151f);
+  assert(socket.sent.size() == 2);
+  assert(socket.sent[0].data == socket.sent[1].data);
+  assert(manager.retransmittedPackets() == 1);
+
+  socket.enqueue(acknowledgement(header.sequence), owner);
+  manager.update(0.016f);
+  assert(manager.pendingReliablePackets() == 0);
+  assert(manager.stats().reliableAcknowledged == 1);
 }
 
 static void testUnknownRoomIsRejected() {
@@ -443,8 +563,10 @@ int main() {
   testDefaultRoomCapacity();
   testNonBooleanInputBytesAreRejected();
   testMalformedPacketIsIgnored();
+  testPlayerInputRoutingRejectsUnknownAndMalformedPeers();
   testEmptyRoomCleanup();
   testReceiveThreadDoesNotOwnSimulationState();
+  testServerReliableAcknowledgementFlow();
   testUnknownRoomIsRejected();
   std::cout << "server room tests passed\n";
   return 0;

@@ -49,6 +49,7 @@ struct GameRoomTestAccess {
     client.posY = 300.0f;
     client.hp = 3;
     client.maxHp = 5;
+    client.sessionToken = 0x1122334455667788ull;
     return room._clients.emplace(id, client).first->second;
   }
 
@@ -57,6 +58,20 @@ struct GameRoomTestAccess {
   }
 
   static void update(GameRoom& room, float dt) { room.updateGameLogic(dt); }
+
+  static void removeClient(GameRoom& room, network::NetworkId id) {
+    room.removeClient(id);
+  }
+
+  static std::size_t ownedMissiles(const GameRoom& room,
+                                  network::NetworkId ownerId) {
+    return static_cast<std::size_t>(std::count_if(
+      room._entities.begin(), room._entities.end(),
+      [ownerId](const auto& entry) {
+        return GameRoom::isPlayerMissile(entry.second.type) &&
+               entry.second.ownerId == ownerId;
+      }));
+  }
 
   static void setKills(GameRoom& room, std::uint32_t kills) {
     room._killsThisStage = kills;
@@ -79,6 +94,10 @@ struct GameRoomTestAccess {
 
   static void advanceAugments(GameRoom& room, network::NetworkId id, float dt) {
     room.updateAugmentTimers(room._clients.at(id), dt);
+  }
+
+  static void broadcastSnapshot(GameRoom& room) {
+    room.broadcastGameState();
   }
 
   static void clearEntities(GameRoom& room, ServerEntityType type) {
@@ -283,8 +302,184 @@ static void testBossProgressionAndScore() {
     [](const auto& packet) { return scoreValue(packet) == 1100; }));
 }
 
+static network::PacketData playerInputPacket(
+    std::uint32_t sequence, network::NetworkId playerId,
+    std::uint64_t token, std::uint8_t up, std::uint8_t down,
+    std::uint8_t left, std::uint8_t right, std::uint8_t shoot) {
+  network::PacketStreamWriter payload;
+  payload << playerId << token << up << down << left << right << shoot;
+  network::PacketHeader header{
+    network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, sequence,
+    static_cast<std::uint16_t>(payload.getBuffer().size())
+  };
+  network::PacketStreamWriter writer;
+  writer << header;
+  auto packet = writer.getBuffer();
+  packet.insert(packet.end(), payload.getBuffer().begin(),
+                payload.getBuffer().end());
+  return packet;
+}
+
+static void testSessionValidationAndInputSequenceWrap() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  const auto endpoint = player.endpoint;
+  const auto startX = player.posX;
+  const auto token = player.sessionToken;
+
+  room.handlePacket(playerInputPacket(100, player.id, token + 1,
+    0, 0, 0, 1, 0), endpoint);
+  server::GameRoomTestAccess::update(room, 0.1f);
+  assert(player.posX == startX);
+
+  room.handlePacket(playerInputPacket(0xFFFFFFFEu, player.id, token,
+    0, 0, 0, 1, 0), endpoint);
+  server::GameRoomTestAccess::update(room, 0.1f);
+  assert(player.posX > startX);
+  const auto afterFirst = player.posX;
+
+  room.handlePacket(playerInputPacket(1u, player.id, token,
+    0, 0, 1, 0, 0), endpoint);
+  server::GameRoomTestAccess::update(room, 0.1f);
+  assert(player.posX < afterFirst);
+  const auto afterWrap = player.posX;
+
+  room.handlePacket(playerInputPacket(0xFFFFFFFFu, player.id, token,
+    0, 0, 0, 1, 0), endpoint);
+  assert(player.velX == -300.0f);
+
+  room.handlePacket(playerInputPacket(2u, player.id, token,
+    0, 0, 0, 1, 0), {"127.0.0.2", endpoint.port});
+  assert(player.velX == -300.0f);
+  assert(player.posX <= afterWrap);
+}
+
+static void testRammingDoesNotAwardScore() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 300.0f;
+  player.posY = 300.0f;
+  server::ServerEntity enemy;
+  enemy.id = 40;
+  enemy.type = server::ServerEntityType::Bydos;
+  enemy.posX = player.posX;
+  enemy.posY = player.posY;
+  enemy.hp = 1;
+  enemy.maxHp = 1;
+  server::GameRoomTestAccess::addEntity(room, enemy);
+
+  server::GameRoomTestAccess::update(room, 0.001f);
+  assert(room.scoreFor(player.id) == 0);
+  assert(room.entityCount(server::ServerEntityType::Bydos) == 0);
+  assert(player.hp == 2);
+}
+
+
+static std::pair<network::PacketType, std::uint16_t> snapshotInfo(
+    const GameplayMockSocket::SentPacket& sent) {
+  network::PacketStreamReader reader(sent.data);
+  network::PacketHeader header{};
+  std::uint16_t count{};
+  reader >> header >> count;
+  assert(header.payloadSize == reader.remaining() + sizeof(count));
+  return {header.type, count};
+}
+
+static void testSnapshotDeltaAndKeyframeCadence() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(socket.sent.size() == 1);
+  auto [type, count] = snapshotInfo(socket.sent.back());
+  assert(type == network::PacketType::GameStateSyncPacked);
+  assert(count == 1);
+
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(socket.sent.size() == 1);
+  player.posX += 8.0f;
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(socket.sent.size() == 2);
+  std::tie(type, count) = snapshotInfo(socket.sent.back());
+  assert(type == network::PacketType::GameStateSyncDelta);
+  assert(count == 1);
+
+  for (int tick = 3; tick < 60; ++tick)
+    server::GameRoomTestAccess::broadcastSnapshot(room);
+  std::tie(type, count) = snapshotInfo(socket.sent.back());
+  assert(type == network::PacketType::GameStateSyncPacked);
+  assert(count == 1);
+}
+
+
+static void testDisconnectRemovesOwnedProjectiles() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& leaving = server::GameRoomTestAccess::addClient(room, 1000);
+  auto& staying = server::GameRoomTestAccess::addClient(room, 1001);
+  const auto leavingId = leaving.id;
+  const auto leavingEndpoint = leaving.endpoint;
+  const auto stayingId = staying.id;
+  const auto stayingEndpoint = staying.endpoint;
+
+  server::ServerEntity oldMissile;
+  oldMissile.id = 2000;
+  oldMissile.type = server::ServerEntityType::PlayerMissile;
+  oldMissile.ownerId = leavingId;
+  server::GameRoomTestAccess::addEntity(room, oldMissile);
+
+  server::ServerEntity activeMissile;
+  activeMissile.id = 2001;
+  activeMissile.type = server::ServerEntityType::PlayerMissile;
+  activeMissile.ownerId = stayingId;
+  server::GameRoomTestAccess::addEntity(room, activeMissile);
+
+  server::GameRoomTestAccess::removeClient(room, leavingId);
+  assert(!room.containsEndpoint(leavingEndpoint));
+  assert(room.containsEndpoint(stayingEndpoint));
+  assert(server::GameRoomTestAccess::ownedMissiles(room, leavingId) == 0);
+  assert(server::GameRoomTestAccess::ownedMissiles(room, stayingId) == 1);
+
+  std::vector<network::NetworkId> destroyed;
+  for (const auto& sent : socket.sent) {
+    if (packetType(sent) != network::PacketType::DestroyEntity ||
+        sent.endpoint.port != stayingEndpoint.port) continue;
+    network::PacketStreamReader reader(sent.data);
+    network::PacketHeader header{};
+    network::NetworkId id{};
+    reader >> header >> id;
+    destroyed.push_back(id);
+  }
+  assert(std::find(destroyed.begin(), destroyed.end(), leavingId) !=
+         destroyed.end());
+  assert(std::find(destroyed.begin(), destroyed.end(), oldMissile.id) !=
+         destroyed.end());
+}
+
+static void testFixedTickReportsDroppedSimulationTime() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  server::GameRoomTestAccess::addClient(room);
+  room.update(2.0f);
+  assert(room.droppedSimulationSeconds() >= 1.74);
+  assert(room.droppedSimulationSeconds() <= 1.76);
+}
+
 int main() {
   testBonusPickupsAndAugments();
   testBossProgressionAndScore();
+  testSessionValidationAndInputSequenceWrap();
+  testRammingDoesNotAwardScore();
+  testSnapshotDeltaAndKeyframeCadence();
+  testDisconnectRemovesOwnedProjectiles();
+  testFixedTickReportsDroppedSimulationTime();
   return 0;
 }

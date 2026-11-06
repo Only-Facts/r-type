@@ -160,4 +160,28 @@ if(BUILD_TESTING)
   )
   target_link_libraries(rtype_server_gameplay_test PRIVATE Threads::Threads)
   add_test(NAME server_gameplay COMMAND rtype_server_gameplay_test)
+
+  add_executable(rtype_server_protocol_test tests/server_protocol_test.cpp)
+  target_include_directories(rtype_server_protocol_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_protocol_test PRIVATE Threads::Threads)
+  add_test(NAME server_protocol COMMAND rtype_server_protocol_test)
+
+  add_executable(rtype_client_network_test tests/client_network_test.cpp)
+  target_include_directories(rtype_client_network_test PRIVATE
+    "include/client"
+    "include/common"
+  )
+  target_link_libraries(rtype_client_network_test PRIVATE Threads::Threads)
+  add_test(NAME client_network COMMAND rtype_client_network_test)
+
+  add_executable(rtype_server_stress_test tests/server_stress_test.cpp)
+  target_include_directories(rtype_server_stress_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_stress_test PRIVATE Threads::Threads)
+  add_test(NAME server_stress COMMAND rtype_server_stress_test)
 endif()
