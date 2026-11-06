@@ -152,4 +152,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(rtype_server_rooms_test PRIVATE Threads::Threads)
   add_test(NAME server_rooms COMMAND rtype_server_rooms_test)
+
+  add_executable(rtype_server_gameplay_test tests/server_gameplay_test.cpp)
+  target_include_directories(rtype_server_gameplay_test PRIVATE
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_server_gameplay_test PRIVATE Threads::Threads)
+  add_test(NAME server_gameplay COMMAND rtype_server_gameplay_test)
 endif()
