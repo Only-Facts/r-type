@@ -91,8 +91,9 @@ static std::uint16_t snapshotEntityCount(
     const MockSocket::SentPacket& sent) {
   network::PacketStreamReader reader(sent.data);
   network::PacketHeader header{};
+  std::uint32_t tick{};
   std::uint16_t count{};
-  reader >> header >> count;
+  reader >> header >> tick >> count;
   return count;
 }
 
@@ -402,9 +403,10 @@ static void testNonBooleanInputBytesAreRejected() {
   assert(stopped != socket.sent.end());
   network::PacketStreamReader stoppedReader(stopped->data);
   network::PacketHeader stoppedHeader{};
+  std::uint32_t stoppedTick{};
   std::uint16_t stoppedCount{};
   network::PackedEntityStateData stoppedState{};
-  stoppedReader >> stoppedHeader >> stoppedCount >> stoppedState;
+  stoppedReader >> stoppedHeader >> stoppedTick >> stoppedCount >> stoppedState;
   assert(stoppedCount == 1);
   assert(network::unpackEntityState(stoppedState).velX == 0.0f);
 

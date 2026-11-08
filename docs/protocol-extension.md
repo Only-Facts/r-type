@@ -303,9 +303,18 @@ a full keyframe is sent at least every 60 server snapshot updates so packet loss
 cannot leave a client permanently out of sync. Entity creation and destruction
 remain separate reliable events.
 
-Both packet types start with a `u16` state count followed by that many packed
-records. A delta is applied as a set of updates, not as a replacement for the
-client's complete entity list. Clients discard stale snapshot sequence numbers.
+Both packet types start with the server snapshot `tick` (`u32`), then a `u16`
+state count followed by that many packed records:
+
+```
+tick u32 | count u16 | count x (netId u32, posX i16, posY i16, velX i16, velY i16)
+```
+
+The tick is the number of fixed simulation steps (60 per second) run by the
+room since it started, so two snapshots are always ordered by their tick and
+their time distance is `(tickB - tickA) / 60` seconds. Clients use it to order snapshots and to
+interpolate remote entities. A delta is applied as a set of updates, not as a
+replacement for the client's complete entity list.
 
 ## 12. Reliable event delivery
 

@@ -78,6 +78,7 @@ namespace rtype::client {
       _lastAugmentSequences.clear();
       _lastScoreSequences.clear();
       _hasSyncSequence = false;
+      _hasSnapshotTick = false;
     }
 
     void update(float dt) {
@@ -135,6 +136,10 @@ namespace rtype::client {
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
+    [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
+      if (!_hasSnapshotTick) return std::nullopt;
+      return _lastSnapshotTick;
+    }
     [[nodiscard]] std::optional<std::uint8_t> getServerDifficulty() const { return _serverDifficulty; }
     [[nodiscard]] std::optional<std::uint8_t> getPlayerSkin(network::NetworkId netId) const {
       auto it = _playerSkins.find(netId);
@@ -317,6 +322,8 @@ namespace rtype::client {
         case network::PacketType::GameStateSync:
         case network::PacketType::GameStateSyncPacked:
         case network::PacketType::GameStateSyncDelta: {
+          std::uint32_t tick{0};
+          if (header.type != network::PacketType::GameStateSync) reader >> tick;
           std::uint16_t count{};
           reader >> count;
           constexpr std::uint16_t MAX_SNAPSHOT_COUNT = 256;
@@ -343,6 +350,10 @@ namespace rtype::client {
           for (const auto& state : _snapshot) updateEntityState(state);
           _lastSyncSeq = header.sequence;
           _hasSyncSequence = true;
+          if (header.type != network::PacketType::GameStateSync) {
+            _lastSnapshotTick = tick;
+            _hasSnapshotTick = true;
+          }
           break;
         }
         default: break;
@@ -537,6 +548,8 @@ namespace rtype::client {
     std::uint32_t _outgoingSeq{1};
     std::uint32_t _lastSyncSeq{0};
     bool _hasSyncSequence{false};
+    std::uint32_t _lastSnapshotTick{0};
+    bool _hasSnapshotTick{false};
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

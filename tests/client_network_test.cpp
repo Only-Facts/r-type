@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -109,7 +110,7 @@ static void testPackedDeltaSnapshotIsApplied() {
   assert(remoteEntity != 0);
 
   network::PacketStreamWriter deltaPayload;
-  deltaPayload << std::uint16_t{1}
+  deltaPayload << std::uint32_t{7} << std::uint16_t{1}
                << network::packEntityState(network::EntityStateData{
                     2000, 456.0f, 321.0f, -10.0f, 25.0f});
   socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 3,
@@ -120,6 +121,7 @@ static void testPackedDeltaSnapshotIsApplied() {
   assert(transform != nullptr);
   assert(transform->targetPosition.x == 456.0f);
   assert(transform->targetPosition.y == 321.0f);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{7});
 }
 
 

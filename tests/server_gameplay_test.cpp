@@ -383,10 +383,19 @@ static std::pair<network::PacketType, std::uint16_t> snapshotInfo(
     const GameplayMockSocket::SentPacket& sent) {
   network::PacketStreamReader reader(sent.data);
   network::PacketHeader header{};
+  std::uint32_t tick{};
   std::uint16_t count{};
-  reader >> header >> count;
-  assert(header.payloadSize == reader.remaining() + sizeof(count));
+  reader >> header >> tick >> count;
+  assert(header.payloadSize == reader.remaining() + sizeof(tick) + sizeof(count));
   return {header.type, count};
+}
+
+static std::uint32_t snapshotTick(const GameplayMockSocket::SentPacket& sent) {
+  network::PacketStreamReader reader(sent.data);
+  network::PacketHeader header{};
+  std::uint32_t tick{};
+  reader >> header >> tick;
+  return tick;
 }
 
 static void testSnapshotDeltaAndKeyframeCadence() {
@@ -400,15 +409,18 @@ static void testSnapshotDeltaAndKeyframeCadence() {
   auto [type, count] = snapshotInfo(socket.sent.back());
   assert(type == network::PacketType::GameStateSyncPacked);
   assert(count == 1);
+  assert(snapshotTick(socket.sent.back()) == 0);
 
   server::GameRoomTestAccess::broadcastSnapshot(room);
   assert(socket.sent.size() == 1);
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
   player.posX += 8.0f;
   server::GameRoomTestAccess::broadcastSnapshot(room);
   assert(socket.sent.size() == 2);
   std::tie(type, count) = snapshotInfo(socket.sent.back());
   assert(type == network::PacketType::GameStateSyncDelta);
   assert(count == 1);
+  assert(snapshotTick(socket.sent.back()) == 1);
 
   for (int tick = 3; tick < 60; ++tick)
     server::GameRoomTestAccess::broadcastSnapshot(room);

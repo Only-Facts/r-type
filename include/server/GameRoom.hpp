@@ -485,6 +485,7 @@ namespace rtype::server {
       _bossActive = false;
       _tickAccumulator = 0.0f;
       _snapshotTick = 0;
+      _simulationTick = 0;
       _forceFullSnapshot = true;
       _previousSnapshot.clear();
     }
@@ -499,6 +500,7 @@ namespace rtype::server {
     }
 
     void updateGameLogic(float dt) {
+      ++_simulationTick;
       std::vector<network::NetworkId> clientsToRemove;
       for (auto& [id, client] : _clients) {
         updateAugmentTimers(client, dt);
@@ -1115,7 +1117,8 @@ namespace rtype::server {
       if (states.empty() && !fullSnapshot) return;
 
       network::PacketStreamWriter payload;
-      payload << static_cast<std::uint16_t>(states.size());
+      payload << _simulationTick
+              << static_cast<std::uint16_t>(states.size());
       for (const auto& state : states) payload << state;
 
       const auto packetType = fullSnapshot
@@ -1174,6 +1177,7 @@ namespace rtype::server {
     float _tickAccumulator{0.0f};
     double _droppedSimulationSeconds{0.0};
     std::uint64_t _snapshotTick{0};
+    std::uint32_t _simulationTick{0};
     bool _forceFullSnapshot{true};
     std::unordered_map<network::NetworkId,
                        network::PackedEntityStateData> _previousSnapshot;
