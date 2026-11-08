@@ -212,11 +212,28 @@ namespace rtype::server {
     static constexpr float WORLD_HEIGHT = 1080.0f;
     static constexpr float PLAYER_WIDTH = 33.0f;
     static constexpr float PLAYER_HEIGHT = 34.0f;
+    static constexpr float BOSS_WIDTH = 224.0f;
+    static constexpr float BOSS_HEIGHT = 224.0f;
+    static constexpr float PLAYER_MISSILE_WIDTH = 18.0f;
+    static constexpr float PLAYER_MISSILE_HEAVY_WIDTH = 24.0f;
+    static constexpr float PLAYER_MISSILE_HEIGHT = 6.0f;
     static constexpr float MAX_FRAME_DELTA = 0.25f;
     static constexpr std::size_t MAX_CATCHUP_TICKS = 15;
     static constexpr std::size_t MAX_ACTIVE_ENTITIES = 48;
     static constexpr std::size_t MAX_SNAPSHOT_ENTITIES = 52;
     static constexpr std::uint64_t SNAPSHOT_KEYFRAME_INTERVAL = 60;
+
+    static bool rectanglesOverlap(float ax, float ay, float aw, float ah,
+                                  float bx, float by, float bw, float bh) {
+      return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+    }
+
+    static bool missileHitsBoss(const ServerEntity& missile, const ServerEntity& boss) {
+      const float width = missile.type == ServerEntityType::PlayerMissileHeavy
+        ? PLAYER_MISSILE_HEAVY_WIDTH : PLAYER_MISSILE_WIDTH;
+      return rectanglesOverlap(missile.posX, missile.posY, width, PLAYER_MISSILE_HEIGHT,
+                               boss.posX, boss.posY, BOSS_WIDTH, BOSS_HEIGHT);
+    }
 
     static bool sameEndpoint(const network::Endpoint& lhs,
                              const network::Endpoint& rhs) {
@@ -821,10 +838,12 @@ namespace rtype::server {
         if (targetId == missile.id || isMarkedDestroyed(destroyed, targetId)) continue;
         if (target.type != ServerEntityType::Bydos &&
             target.type != ServerEntityType::Boss) continue;
-        const float halfWidth = target.type == ServerEntityType::Boss ? 100.0f : 33.0f;
-        const float halfHeight = target.type == ServerEntityType::Boss ? 75.0f : 33.0f;
-        if (std::abs(missile.posX - target.posX) >= halfWidth ||
-            std::abs(missile.posY - target.posY) >= halfHeight) continue;
+        if (target.type == ServerEntityType::Boss) {
+          if (!missileHitsBoss(missile, target)) continue;
+        } else if (std::abs(missile.posX - target.posX) >= 33.0f ||
+                   std::abs(missile.posY - target.posY) >= 33.0f) {
+          continue;
+        }
         destroyed.push_back(missile.id);
         target.hp -= missile.damage;
         broadcastHealthUpdate(targetId, target.hp, target.maxHp);
@@ -868,10 +887,13 @@ namespace rtype::server {
       for (auto& [id, client] : _clients) {
         if (client.dead) continue;
         const bool boss = enemy.type == ServerEntityType::Boss;
-        const float halfWidth = boss ? 100.0f : 33.0f;
-        const float halfHeight = boss ? 75.0f : 25.0f;
-        if (std::abs(enemy.posX - client.posX) >= halfWidth ||
-            std::abs(enemy.posY - client.posY) >= halfHeight) continue;
+        if (boss) {
+          if (!rectanglesOverlap(client.posX, client.posY, PLAYER_WIDTH, PLAYER_HEIGHT,
+                                 enemy.posX, enemy.posY, BOSS_WIDTH, BOSS_HEIGHT)) continue;
+        } else if (std::abs(enemy.posX - client.posX) >= 33.0f ||
+                   std::abs(enemy.posY - client.posY) >= 25.0f) {
+          continue;
+        }
         if (!boss) {
           destroyed.push_back(enemy.id);
           ++_killsThisStage;

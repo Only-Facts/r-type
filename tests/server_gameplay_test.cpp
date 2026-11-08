@@ -77,6 +77,10 @@ struct GameRoomTestAccess {
     room._killsThisStage = kills;
   }
 
+  static bool hasEntity(const GameRoom& room, network::NetworkId id) {
+    return room._entities.find(id) != room._entities.end();
+  }
+
   static network::NetworkId bossId(const GameRoom& room) {
     for (const auto& [id, entity] : room._entities) {
       if (entity.type == ServerEntityType::Boss) return id;
@@ -241,6 +245,46 @@ static void testBonusPickupsAndAugments() {
   assert(room.augmentLevel(player.id, 3) == 0);
   const auto augmentPackets = packetsOf(socket, 0x14);
   assert(augmentPackets.size() >= 5);
+}
+
+static void testBossHitboxMatchesItsSprite() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 100.0f;
+  player.posY = 100.0f;
+
+  server::ServerEntity boss;
+  boss.id = 40;
+  boss.type = server::ServerEntityType::Boss;
+  boss.posX = 1600.0f;
+  boss.posY = 400.0f;
+  boss.baseY = 400.0f;
+  boss.hp = 50;
+  boss.maxHp = 50;
+  server::GameRoomTestAccess::addEntity(room, boss);
+
+  server::ServerEntity lowerHalf;
+  lowerHalf.id = 41;
+  lowerHalf.type = server::ServerEntityType::PlayerMissile;
+  lowerHalf.posX = 1650.0f;
+  lowerHalf.posY = 600.0f;
+  lowerHalf.ownerId = player.id;
+  server::GameRoomTestAccess::addEntity(room, lowerHalf);
+
+  server::ServerEntity aboveSprite;
+  aboveSprite.id = 42;
+  aboveSprite.type = server::ServerEntityType::PlayerMissile;
+  aboveSprite.posX = 1520.0f;
+  aboveSprite.posY = 350.0f;
+  aboveSprite.ownerId = player.id;
+  server::GameRoomTestAccess::addEntity(room, aboveSprite);
+
+  server::GameRoomTestAccess::update(room, 0.001f);
+  assert(!server::GameRoomTestAccess::hasEntity(room, lowerHalf.id));
+  assert(server::GameRoomTestAccess::hasEntity(room, aboveSprite.id));
+  assert(!packetsOf(socket, 0x13).empty());
 }
 
 static void testBossProgressionAndScore() {
@@ -487,6 +531,7 @@ static void testFixedTickReportsDroppedSimulationTime() {
 
 int main() {
   testBonusPickupsAndAugments();
+  testBossHitboxMatchesItsSprite();
   testBossProgressionAndScore();
   testSessionValidationAndInputSequenceWrap();
   testRammingDoesNotAwardScore();
