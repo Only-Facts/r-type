@@ -18,6 +18,7 @@
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -38,6 +39,7 @@ namespace rtype::game {
     constexpr const char* SECTION_ENTITY_TYPES = "entity_types";
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
+    constexpr const char* DEBUG_LINE_NETWORK = "network";
     constexpr const char* SESSION_NET_ID = "player_net_id";
 
     unsigned short readPort(const engine::Config& config) {
@@ -61,6 +63,8 @@ namespace rtype::game {
       _firstPlayerId(static_cast<network::NetworkId>(std::max(0, context.config.getInt(SECTION_GAME, "first_player_id", 1)))),
       _playerZ(context.config.getInt(SECTION_GAME, "player_z", 10)),
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
+      _snapshotBufferSize(static_cast<std::size_t>(std::max(2, context.config.getInt(SECTION_NETWORK, "snapshot_buffer_size", 32)))),
+      _networkDebugText(context.config.getString(SECTION_NETWORK, "debug_text")),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
@@ -69,6 +73,14 @@ namespace rtype::game {
                   static_cast<float>(context.config.getInt("window", "height", 1080))} {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
+    const float tickRate = context.config.getFloat(SECTION_NETWORK, "server_tick_rate", 60.0f);
+    const float delayMs = context.config.getFloat(SECTION_NETWORK, "interpolation_delay_ms", 100.0f);
+    const float extrapolationMs = context.config.getFloat(SECTION_NETWORK, "max_extrapolation_ms", 100.0f);
+    if (tickRate <= 0.0f) throw RtypeError("[network] server_tick_rate must be > 0");
+    if (delayMs < 0.0f || extrapolationMs < 0.0f)
+      throw RtypeError("[network] interpolation_delay_ms and max_extrapolation_ms must be >= 0");
+    _snapshotClock.configure(tickRate, delayMs / 1000.0f, extrapolationMs / 1000.0f);
+    _network.setSnapshotBufferSize(_snapshotBufferSize);
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
     _augments.load(context.config, SECTION_AUGMENTS);
     _skins.load(context.config, "skins");
@@ -116,6 +128,7 @@ namespace rtype::game {
 
   GameScene::~GameScene() {
     _network.disconnect();
+    _context.debug.lines.erase(DEBUG_LINE_NETWORK);
   }
 
   void GameScene::exit() {
@@ -188,6 +201,26 @@ namespace rtype::game {
     keepLocalShipOnScreen();
     _hud.update(dt);
     updateConnectionStatus(dt);
+    updateNetworkDebugLine();
+  }
+
+  void GameScene::updateNetworkDebugLine() {
+    if (!_context.debug.overlayVisible || _networkDebugText.empty()) return;
+    std::size_t remote = 0;
+    std::size_t buffered = 0;
+    _registry.each<engine::SnapshotBufferComponent>([&](engine::Entity, engine::SnapshotBufferComponent& buffer) {
+      ++remote;
+      buffered += buffer.samples.size();
+    });
+    const auto tick = _network.getLastSnapshotTick();
+    _context.debug.lines[DEBUG_LINE_NETWORK] = engine::formatTemplate(_networkDebugText, {
+      {"tick", tick ? std::to_string(*tick) : std::string("-")},
+      {"delay", std::to_string(std::lround(_snapshotClock.delaySeconds() * 1000.0))},
+      {"buffer", std::to_string(remote ? buffered / remote : 0)},
+      {"capacity", std::to_string(_snapshotBufferSize)},
+      {"late", std::to_string(_network.getLateSnapshotCount())},
+      {"remote", std::to_string(remote)},
+    });
   }
 
   void GameScene::sendInputs() {

@@ -145,6 +145,8 @@ namespace rtype::client {
       _snapshotBufferSize = std::max(size, engine::MIN_SNAPSHOT_BUFFER_CAPACITY);
     }
 
+    [[nodiscard]] std::size_t getLateSnapshotCount() const { return _lateSnapshots; }
+
     [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
       if (!_hasSnapshotTick) return std::nullopt;
       return _lastSnapshotTick;
@@ -372,6 +374,7 @@ namespace rtype::client {
             if (!staleSync) updateEntityState(state);
           }
           if (hasTick && _snapshotClock) _snapshotClock->observe(tick);
+          if (hasTick && staleSync) ++_lateSnapshots;
           if (hasTick && (!_hasSnapshotTick || tick > _lastSnapshotTick)) {
             _lastSnapshotTick = tick;
             _hasSnapshotTick = true;
@@ -618,6 +621,7 @@ namespace rtype::client {
     std::size_t _snapshotBufferSize{32};
     engine::SnapshotClock* _snapshotClock{nullptr};
     std::vector<PendingDestroy> _pendingDestroys;
+    std::size_t _lateSnapshots{0};
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

@@ -49,6 +49,7 @@ namespace rtype::game {
     void updateConnectionStatus(float dt);
     void sendInputs();
     void keepLocalShipOnScreen();
+    void updateNetworkDebugLine();
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -102,6 +103,8 @@ namespace rtype::game {
     network::NetworkId _firstPlayerId;
     int _playerZ;
     float _interpolationSpeed;
+    std::size_t _snapshotBufferSize;
+    std::string _networkDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
     std::string _menuAction;

@@ -16,7 +16,7 @@ same game over UDP.
 - Player shooting, collisions, health bar and death screen
 - Bonuses dropped by destroyed enemies (double shot, triple shot, heal, damage up)
 - Parallax starfield, sprite animations, sounds and music
-- Debug overlay (F3) with frame rate, frame time and the number of sprites and texts drawn
+- Debug overlay (F3) with frame rate, frame time, sprites drawn and network statistics (server tick, snapshot buffer, late snapshots)
 - Fully configurable through text files: window, controls, assets, sounds, texts and colors
 
 ## Requirements
@@ -92,6 +92,20 @@ handy to test multiplayer on a single machine:
 ```sh
 ./run
 ```
+
+### Testing on a bad connection
+
+`scripts/lag_relay.py` sits between the clients and the server and adds latency, jitter,
+reordering or loss, to check that remote entities stay smooth:
+
+```sh
+./build/r-type_server
+python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
+./build/r-type_client -p 4243
+```
+
+Press F3 in game to see the network line of the debug overlay (server tick, buffered
+snapshots, late snapshots).
 
 ### Server options
 

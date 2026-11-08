@@ -167,6 +167,74 @@ reordering the list changes the skin the other players see.
 Press F3 (`[debug] toggle_action`) to show FPS, frame time and the number of sprites and
 texts drawn. The visibility is engine-wide, so it stays on across scene changes.
 
+A scene can add its own lines through `_context.debug.lines["name"]`. The game scene adds
+a network line (`[network] debug_text`):
+
+```
+NET  tick 675  delay 100 ms  buffer 31/32  late 198  remote 21
+```
+
+`tick` is the newest server tick received, `buffer` the average number of snapshots kept
+per remote entity, `late` the number of snapshots that arrived after a newer one and were
+still used, `remote` the number of interpolated entities.
+
+### Remote entity interpolation
+
+Every snapshot (`0x31` / `0x32`) carries the server simulation tick (60 per second). The
+client keeps, for each remote entity (enemies, missiles, bonuses, other players), a
+bounded buffer of `{tick, position, velocity}` samples sorted by tick
+(`SnapshotBufferComponent`, `engine/ecs/SnapshotBuffer.hpp`):
+
+- a late snapshot is inserted at its place instead of being dropped;
+- a duplicate tick is ignored, and a sample older than a full buffer is rejected;
+- when the buffer is full the oldest samples are removed.
+
+`SnapshotClock` estimates the current server tick from the arrival of the snapshots and
+smooths it, so a late packet does not make the clock go backwards.
+`SnapshotInterpolationSystem` draws the remote entities `interpolation_delay_ms` in the
+past: it takes the two samples around that instant and interpolates between them. When no
+newer sample exists yet, it continues along the last velocity for at most
+`max_extrapolation_ms`, then holds the position.
+
+The same timeline is used for the entity lifecycle:
+
+- a new remote entity stays hidden until the render time reaches its first sample, then
+  appears exactly there (its `FollowComponent` tag too);
+- after `DestroyEntity`, the entity stops receiving updates but stays on screen until the
+  render time reaches the destruction tick, so a missile visibly reaches its target before
+  both disappear. After one second at most it is removed anyway.
+
+The local ship has no buffer: it keeps the `InterpolationComponent` smoothing toward the
+latest server position.
+
+| Key (`[network]`) | Default | Why |
+|---|---|---|
+| `server_tick_rate` | `60` | The server simulates in fixed 1/60 s steps, so one tick is 16.7 ms. |
+| `interpolation_delay_ms` | `100` | 6 server ticks. Two samples around the render time stay available with up to about 80 ms of jitter plus one lost snapshot. Lower values extrapolate more often on a bad connection, higher values make remote entities lag further behind. |
+| `max_extrapolation_ms` | `100` | Bounds the error when data is missing: the fastest entity (player missile, 900 px/s) overshoots by 90 px at most. |
+| `snapshot_buffer_size` | `32` | About 530 ms of history at 60 Hz, well above `delay + extrapolation` (12 ticks), so late snapshots still find their place. It costs 20 bytes per sample and per entity. |
+
+Measured on a simulated enemy moving at constant speed (standard deviation of the
+displacement per frame, lower is smoother):
+
+| Network | Previous smoothing | Snapshot interpolation |
+|---|---|---|
+| Perfect | 0.00 px | 0.00 px |
+| 30 ms jitter | 0.43 px | 0.07 px |
+| 60 ms jitter, 10 % reordered | 0.65 px | 0.16 px |
+| 90 ms jitter, 20 % reordered | 0.83 px | 0.23 px |
+
+To see it in the game, put `scripts/lag_relay.py` between the clients and the server:
+
+```sh
+./build/r-type_server
+python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
+./build/r-type_client -p 4243
+```
+
+`python3 scripts/lag_relay.py --help` lists the options (latency, jitter, reordering, loss,
+impaired direction).
+
 ### Add a backend (SDL, Raylib...)
 
 Implement `engine::IBackend` (window, input, textures, UDP socket) under
@@ -181,7 +249,7 @@ Implement `engine::IBackend` (window, input, textures, UDP socket) under
 | `[window]`    | `title`, `width`, `height`, `framerate` (0 = unlimited), `vsync` |
 | `[input]`     | `action = key [key...]` |
 | `[audio]`     | `enabled`, `muted`, `master_volume`, `music_volume`, `sfx_volume` |
-| `[network]`   | `host`, `port`, `interpolation_speed`, `connect_timeout` |
+| `[network]`   | `host`, `port`, `interpolation_speed` (local ship), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `debug_text`, `connect_timeout` |
 | `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
 | `[title]`     | `font`, `title_*`, `subtitle_*`, `prompt_*`, `difficulty_*`, `start_action`, `next_scene`, `music`, `start_sound`, `server_text`, `controls`, `label_<action>` |
 | `[skins]`     | `list`, `default`; one `[skin:<id>]` per ship: `label`, `asset`, `color`. The index in `list` is the value sent on the network |
