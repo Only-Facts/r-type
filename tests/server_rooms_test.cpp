@@ -1,4 +1,5 @@
 #include "ServerNetworkManager.hpp"
+#include "network/SnapshotDelta.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -403,12 +404,11 @@ static void testNonBooleanInputBytesAreRejected() {
   assert(stopped != socket.sent.end());
   network::PacketStreamReader stoppedReader(stopped->data);
   network::PacketHeader stoppedHeader{};
-  std::uint32_t stoppedTick{};
-  std::uint16_t stoppedCount{};
-  network::PackedEntityStateData stoppedState{};
-  stoppedReader >> stoppedHeader >> stoppedTick >> stoppedCount >> stoppedState;
-  assert(stoppedCount == 1);
-  assert(network::unpackEntityState(stoppedState).velX == 0.0f);
+  stoppedReader >> stoppedHeader;
+  const auto stoppedDelta = network::readSnapshotDelta(stoppedReader, 64);
+  assert(stoppedDelta.changed.size() == 1);
+  assert((stoppedDelta.changed.front().mask & network::DELTA_VEL_X) != 0);
+  assert(network::unpackEntityState(stoppedDelta.changed.front().state).velX == 0.0f);
 
   network::PacketStreamWriter invalidPayload;
   invalidPayload << connected.playerId << connected.sessionToken

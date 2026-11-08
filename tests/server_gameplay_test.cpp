@@ -1,4 +1,5 @@
 #include "GameRoom.hpp"
+#include "network/SnapshotDelta.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -78,6 +79,8 @@ struct GameRoomTestAccess {
   static void setKills(GameRoom& room, std::uint32_t kills) {
     room._killsThisStage = kills;
   }
+
+  static void removeEntity(GameRoom& room, network::NetworkId id) { room._entities.erase(id); }
 
   static bool hasEntity(const GameRoom& room, network::NetworkId id) {
     return room._entities.find(id) != room._entities.end();
@@ -533,9 +536,14 @@ static std::pair<network::PacketType, std::uint16_t> snapshotInfo(
     const GameplayMockSocket::SentPacket& sent) {
   network::PacketStreamReader reader(sent.data);
   network::PacketHeader header{};
+  reader >> header;
+  if (header.type == network::PacketType::GameStateSyncDelta) {
+    const auto delta = network::readSnapshotDelta(reader, 256);
+    return {header.type, static_cast<std::uint16_t>(delta.changed.size())};
+  }
   std::uint32_t tick{};
   std::uint16_t count{};
-  reader >> header >> tick >> count;
+  reader >> tick >> count;
   assert(header.payloadSize == reader.remaining() + sizeof(tick) + sizeof(count));
   return {header.type, count};
 }
@@ -546,6 +554,50 @@ static std::uint32_t snapshotTick(const GameplayMockSocket::SentPacket& sent) {
   std::uint32_t tick{};
   reader >> header >> tick;
   return tick;
+}
+
+static network::SnapshotDelta lastDelta(const GameplayMockSocket& socket) {
+  network::PacketStreamReader reader(socket.sent.back().data);
+  network::PacketHeader header{};
+  reader >> header;
+  assert(header.type == network::PacketType::GameStateSyncDelta);
+  return network::readSnapshotDelta(reader, 256);
+}
+
+static void testSnapshotDeltaNamesItsBaseAndLifecycle() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 100.0f;
+  player.posY = 100.0f;
+
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(packetType(socket.sent.back()) == network::PacketType::GameStateSyncPacked);
+  const std::uint32_t firstTick = snapshotTick(socket.sent.back());
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  server::ServerEntity enemy;
+  enemy.id = 2500;
+  enemy.type = server::ServerEntityType::Bydos;
+  enemy.posX = 1500.0f;
+  enemy.posY = 500.0f;
+  server::GameRoomTestAccess::addEntity(room, enemy);
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  auto delta = lastDelta(socket);
+  assert(delta.baseTick == firstTick);
+  assert(delta.tick == firstTick + 1);
+  assert(delta.removed.empty());
+  assert(std::any_of(delta.changed.begin(), delta.changed.end(), [](const auto& record) {
+    return record.state.netId == 2500 && record.mask == network::DELTA_ALL_FIELDS;
+  }));
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  server::GameRoomTestAccess::removeEntity(room, 2500);
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  delta = lastDelta(socket);
+  assert(delta.baseTick == firstTick + 1);
+  assert(delta.removed.size() == 1 && delta.removed.front() == 2500);
 }
 
 static void testSnapshotDeltaAndKeyframeCadence() {
@@ -646,6 +698,7 @@ int main() {
   testSessionValidationAndInputSequenceWrap();
   testRammingDoesNotAwardScore();
   testSnapshotDeltaAndKeyframeCadence();
+  testSnapshotDeltaNamesItsBaseAndLifecycle();
   testDisconnectRemovesOwnedProjectiles();
   testFixedTickReportsDroppedSimulationTime();
   return 0;

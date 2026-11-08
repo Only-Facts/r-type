@@ -114,11 +114,17 @@ static void testPackedDeltaSnapshotIsApplied() {
   manager.update(0.0f);
   assert(remoteEntity != 0);
 
+  const network::SnapshotState base{
+    {2000, network::packEntityState(network::EntityStateData{2000, 100.0f, 200.0f, 0.0f, 0.0f})}};
+  network::PacketStreamWriter fullPayload;
+  fullPayload << std::uint32_t{6} << std::uint16_t{1} << base.at(2000);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 3, fullPayload.getBuffer()), server);
+
+  const network::SnapshotState next{
+    {2000, network::packEntityState(network::EntityStateData{2000, 456.0f, 321.0f, -10.0f, 25.0f})}};
   network::PacketStreamWriter deltaPayload;
-  deltaPayload << std::uint32_t{7} << std::uint16_t{1}
-               << network::packEntityState(network::EntityStateData{
-                    2000, 456.0f, 321.0f, -10.0f, 25.0f});
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 3,
+  network::writeSnapshotDelta(deltaPayload, network::makeSnapshotDelta(base, 6, next, 7));
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 4,
                             deltaPayload.getBuffer()), server);
   manager.update(0.0f);
   auto* transform = registry.getComponent<engine::TransformComponent>(
@@ -181,10 +187,10 @@ static void testLateSnapshotIsBufferedWithoutMovingTarget() {
   manager.update(0.0f);
   assert(remoteEntity != 0);
 
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 6, snapshotPayload(12, 2000, 300.0f, 200.0f)), server);
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 4, snapshotPayload(10, 2000, 200.0f, 200.0f)), server);
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 6, snapshotPayload(12, 2000, 300.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 4, snapshotPayload(10, 2000, 200.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
   manager.update(0.0f);
 
   const auto* buffer = registry.getComponent<engine::SnapshotBufferComponent>(remoteEntity);
@@ -304,7 +310,7 @@ static void testRemoteDestroyWaitsForRenderTime() {
   assert(remoteEntity != 0);
   const network::Endpoint server{"127.0.0.1", 4242};
 
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 3, snapshotPayload(60, 2000, 150.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 3, snapshotPayload(60, 2000, 150.0f, 200.0f)), server);
   manager.update(0.0f);
   clock.nextRenderTick();
 
@@ -313,7 +319,7 @@ static void testRemoteDestroyWaitsForRenderTime() {
   assert(destroyedCount == 0);
   assert(registry.getComponent<engine::TransformComponent>(remoteEntity) != nullptr);
 
-  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(61, 2000, 999.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 5, snapshotPayload(61, 2000, 999.0f, 200.0f)), server);
   manager.update(0.0f);
   const auto* buffer = registry.getComponent<engine::SnapshotBufferComponent>(remoteEntity);
   assert(buffer != nullptr && buffer->samples.back().tick == 60);
@@ -437,6 +443,58 @@ static void testPredictionHandlesSequenceWrapAndStop() {
   assert(near(prediction.predicted().y, 65.0));
 }
 
+static network::PacketData fullPacket(std::uint32_t sequence, std::uint32_t tick, const network::SnapshotState& state) {
+  network::PacketStreamWriter payload;
+  payload << tick << static_cast<std::uint16_t>(state.size());
+  for (const auto& [id, packed] : state) payload << packed;
+  return makePacket(network::PacketType::GameStateSyncPacked, sequence, payload.getBuffer());
+}
+
+static network::PacketData deltaPacket(std::uint32_t sequence, const network::SnapshotState& base,
+                                       std::uint32_t baseTick, const network::SnapshotState& next, std::uint32_t tick) {
+  network::PacketStreamWriter payload;
+  network::writeSnapshotDelta(payload, network::makeSnapshotDelta(base, baseTick, next, tick));
+  return makePacket(network::PacketType::GameStateSyncDelta, sequence, payload.getBuffer());
+}
+
+static network::SnapshotState stateAt(network::NetworkId id, float x) {
+  return {{id, network::packEntityState(network::EntityStateData{id, x, 200.0f, 0.0f, 0.0f})}};
+}
+
+static void testDeltaNeedsAKnownBase() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::Entity remoteEntity = 0;
+  manager.setOnEntitySpawned(
+    [&](engine::Entity entity, network::NetworkId, network::ext::EntityType, bool) { remoteEntity = entity; });
+  spawnRemoteEntity(socket, manager);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  auto* transform = registry.getComponent<engine::TransformComponent>(remoteEntity);
+
+  socket.enqueue(deltaPacket(3, stateAt(2000, 100.0f), 9, stateAt(2000, 300.0f), 10), server);
+  manager.update(0.0f);
+  assert(manager.getUnknownBaseDeltaCount() == 1);
+  assert(transform->targetPosition.x == 100.0f);
+  assert(!manager.getLastSnapshotTick());
+
+  socket.enqueue(fullPacket(4, 20, stateAt(2000, 400.0f)), server);
+  socket.enqueue(deltaPacket(5, stateAt(2000, 400.0f), 20, stateAt(2000, 410.0f), 21), server);
+  manager.update(0.0f);
+  assert(manager.getUnknownBaseDeltaCount() == 1);
+  assert(transform->targetPosition.x == 410.0f);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{21});
+
+  network::SnapshotState withMissile = stateAt(2000, 420.0f);
+  withMissile.emplace(2001, network::packEntityState(network::EntityStateData{2001, 50.0f, 50.0f, 900.0f, 0.0f}));
+  socket.enqueue(deltaPacket(6, stateAt(2000, 410.0f), 21, withMissile, 22), server);
+  socket.enqueue(deltaPacket(7, withMissile, 22, stateAt(2000, 430.0f), 23), server);
+  socket.enqueue(deltaPacket(8, stateAt(2000, 430.0f), 23, stateAt(2000, 440.0f), 24), server);
+  manager.update(0.0f);
+  assert(manager.getUnknownBaseDeltaCount() == 1);
+  assert(transform->targetPosition.x == 440.0f);
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -535,6 +593,7 @@ int main() {
   testPredictionMatchesServerAndReplaysPendingInputs();
   testPredictionCorrectionIsSmoothedOrSnapped();
   testPredictionHandlesSequenceWrapAndStop();
+  testDeltaNeedsAKnownBase();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }

@@ -5,6 +5,7 @@
 #include "network/INetworkSocket.hpp"
 #include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
+#include "network/SnapshotDelta.hpp"
 #include "ReliableUdpQueue.hpp"
 #include "ServerMetrics.hpp"
 #include <unordered_map>
@@ -556,6 +557,7 @@ namespace rtype::server {
       _simulationTick = 0;
       _forceFullSnapshot = true;
       _previousSnapshot.clear();
+      _hasPreviousSnapshot = false;
     }
 
     void removeTimedOutClients(float dt) {
@@ -1156,8 +1158,7 @@ namespace rtype::server {
       if (_clients.empty()) return;
       sendInputAcks();
 
-      std::unordered_map<network::NetworkId,
-                         network::PackedEntityStateData> current;
+      network::SnapshotState current;
       current.reserve(_clients.size() + _entities.size());
       for (const auto& [id, client] : _clients) {
         const network::EntityStateData state{
@@ -1173,40 +1174,44 @@ namespace rtype::server {
       }
 
       ++_snapshotTick;
-      const bool fullSnapshot = _forceFullSnapshot ||
+      const bool keyframe = _forceFullSnapshot || !_hasPreviousSnapshot ||
         (_snapshotTick % SNAPSHOT_KEYFRAME_INTERVAL == 0);
-      std::vector<network::PackedEntityStateData> states;
-      states.reserve(current.size());
-      for (const auto& [id, state] : current) {
-        const auto previous = _previousSnapshot.find(id);
-        if (fullSnapshot || previous == _previousSnapshot.end() ||
-            previous->second != state) {
-          states.push_back(state);
-        }
+      network::PacketData packet;
+      if (keyframe) {
+        packet = snapshotPacket(network::PacketType::GameStateSyncPacked, fullSnapshotPayload(current));
+      } else {
+        const network::SnapshotDelta delta =
+          network::makeSnapshotDelta(_previousSnapshot, _previousSnapshotTick, current, _simulationTick);
+        if (delta.changed.empty() && delta.removed.empty()) return;
+        network::PacketStreamWriter payload;
+        network::writeSnapshotDelta(payload, delta);
+        packet = snapshotPacket(network::PacketType::GameStateSyncDelta, payload.getBuffer());
       }
+      for (const auto& [id, client] : _clients)
+        sendDatagram(packet, client.endpoint, false);
+
       _previousSnapshot = std::move(current);
+      _previousSnapshotTick = _simulationTick;
+      _hasPreviousSnapshot = true;
       _forceFullSnapshot = false;
-      if (states.empty() && !fullSnapshot) return;
+    }
 
+    network::PacketData fullSnapshotPayload(const network::SnapshotState& state) const {
       network::PacketStreamWriter payload;
-      payload << _simulationTick
-              << static_cast<std::uint16_t>(states.size());
-      for (const auto& state : states) payload << state;
+      payload << _simulationTick << static_cast<std::uint16_t>(state.size());
+      for (const auto& [id, packed] : state) payload << packed;
+      return payload.getBuffer();
+    }
 
-      const auto packetType = fullSnapshot
-        ? network::PacketType::GameStateSyncPacked
-        : network::PacketType::GameStateSyncDelta;
+    network::PacketData snapshotPacket(network::PacketType type, const network::PacketData& payload) {
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, packetType, _outgoingSeq++,
-        static_cast<std::uint16_t>(payload.getBuffer().size())
+        network::PROTOCOL_MAGIC, type, _outgoingSeq++, static_cast<std::uint16_t>(payload.size())
       };
       network::PacketStreamWriter writer;
       writer << header;
       auto packet = writer.getBuffer();
-      packet.insert(packet.end(), payload.getBuffer().begin(),
-                    payload.getBuffer().end());
-      for (const auto& [id, client] : _clients)
-        sendDatagram(packet, client.endpoint, false);
+      packet.insert(packet.end(), payload.begin(), payload.end());
+      return packet;
     }
 
     void sendDatagram(const network::PacketData& packet,
@@ -1251,8 +1256,9 @@ namespace rtype::server {
     std::uint64_t _snapshotTick{0};
     std::uint32_t _simulationTick{0};
     bool _forceFullSnapshot{true};
-    std::unordered_map<network::NetworkId,
-                       network::PackedEntityStateData> _previousSnapshot;
+    network::SnapshotState _previousSnapshot;
+    std::uint32_t _previousSnapshotTick{0};
+    bool _hasPreviousSnapshot{false};
     float _bydoSpawnTimer{0.f};
     float _enemyShootTimer{0.f};
     float _bossShootTimer{0.f};

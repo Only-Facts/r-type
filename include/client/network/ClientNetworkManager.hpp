@@ -9,6 +9,7 @@
 #include "network/INetworkSocket.hpp"
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
+#include "network/SnapshotDelta.hpp"
 #include "network/ProtocolExtension.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -91,6 +92,7 @@ namespace rtype::client {
       _hasSyncSequence = false;
       _hasSnapshotTick = false;
       _hasInputAck = false;
+      _snapshotHistory.clear();
     }
 
     void update(float dt) {
@@ -158,6 +160,7 @@ namespace rtype::client {
     }
 
     [[nodiscard]] std::size_t getLateSnapshotCount() const { return _lateSnapshots; }
+    [[nodiscard]] std::size_t getUnknownBaseDeltaCount() const { return _unknownBaseDeltas; }
 
     [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
       if (!_hasSnapshotTick) return std::nullopt;
@@ -361,51 +364,91 @@ namespace rtype::client {
           destroyEntity(netId, header.sequence);
           break;
         }
-        case network::PacketType::GameStateSync:
-        case network::PacketType::GameStateSyncPacked:
-        case network::PacketType::GameStateSyncDelta: {
-          std::uint32_t tick{0};
-          if (header.type != network::PacketType::GameStateSync) reader >> tick;
+        case network::PacketType::GameStateSync: {
           std::uint16_t count{};
           reader >> count;
-          constexpr std::uint16_t MAX_SNAPSHOT_COUNT = 256;
           if (count > MAX_SNAPSHOT_COUNT) return;
-          const std::size_t stateSize =
-            header.type == network::PacketType::GameStateSync
-              ? sizeof(network::EntityStateData)
-              : sizeof(network::PackedEntityStateData);
-          if (reader.remaining() != static_cast<std::size_t>(count) * stateSize)
-            return;
-          _snapshot.clear();
-          _snapshot.reserve(count);
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::EntityStateData)) return;
           for (std::uint16_t i = 0; i < count; ++i) {
             network::EntityStateData state{};
-            if (header.type != network::PacketType::GameStateSync) {
-              network::PackedEntityStateData packed{};
-              reader >> packed;
-              state = network::unpackEntityState(packed);
-            } else {
-              reader >> state;
-            }
-            _snapshot.push_back(state);
-          }
-          const bool hasTick = header.type != network::PacketType::GameStateSync;
-          for (const auto& state : _snapshot) {
-            if (hasTick) recordSnapshotSample(state, tick);
+            reader >> state;
             if (!staleSync) updateEntityState(state);
-          }
-          if (hasTick && _snapshotClock) _snapshotClock->observe(tick);
-          if (hasTick && staleSync) ++_lateSnapshots;
-          if (hasTick && (!_hasSnapshotTick || tick > _lastSnapshotTick)) {
-            _lastSnapshotTick = tick;
-            _hasSnapshotTick = true;
           }
           if (staleSync) break;
           _lastSyncSeq = header.sequence;
           _hasSyncSequence = true;
           break;
         }
+        case network::PacketType::GameStateSyncPacked: {
+          std::uint32_t tick{0};
+          std::uint16_t count{};
+          reader >> tick >> count;
+          if (count > MAX_SNAPSHOT_COUNT) return;
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::PackedEntityStateData)) return;
+          network::SnapshotState state;
+          state.reserve(count);
+          for (std::uint16_t i = 0; i < count; ++i) {
+            network::PackedEntityStateData packed{};
+            reader >> packed;
+            state[packed.netId] = packed;
+          }
+          acceptSnapshot(tick, std::move(state));
+          break;
+        }
+        case network::PacketType::GameStateSyncDelta:
+          handleSnapshotDelta(network::readSnapshotDelta(reader, MAX_SNAPSHOT_COUNT));
+          break;
         default: break;
+      }
+    }
+
+    static constexpr std::size_t MAX_SNAPSHOT_COUNT = 256;
+    static constexpr std::size_t MAX_SNAPSHOT_HISTORY = 64;
+
+    void acceptSnapshot(std::uint32_t tick, network::SnapshotState state) {
+      const bool late = _hasSnapshotTick && tick <= _lastSnapshotTick;
+      for (const auto& [id, packed] : state) {
+        const network::EntityStateData entity = network::unpackEntityState(packed);
+        recordSnapshotSample(entity, tick);
+        if (!late) updateEntityState(entity);
+      }
+      if (_snapshotClock) _snapshotClock->observe(tick);
+      if (late) {
+        ++_lateSnapshots;
+      } else {
+        _lastSnapshotTick = tick;
+        _hasSnapshotTick = true;
+      }
+      storeSnapshot(tick, std::move(state));
+    }
+
+    void handleSnapshotDelta(const network::SnapshotDelta& delta) {
+      const network::SnapshotState* base = findSnapshot(delta.baseTick);
+      if (!base) {
+        ++_unknownBaseDeltas;
+        return;
+      }
+      acceptSnapshot(delta.tick, network::applySnapshotDelta(*base, delta));
+    }
+
+    const network::SnapshotState* findSnapshot(std::uint32_t tick) const {
+      for (const auto& [storedTick, state] : _snapshotHistory)
+        if (storedTick == tick) return &state;
+      return nullptr;
+    }
+
+    void storeSnapshot(std::uint32_t tick, network::SnapshotState state) {
+      for (auto& [storedTick, stored] : _snapshotHistory) {
+        if (storedTick == tick) {
+          stored = std::move(state);
+          return;
+        }
+      }
+      _snapshotHistory.emplace_back(tick, std::move(state));
+      while (_snapshotHistory.size() > MAX_SNAPSHOT_HISTORY) {
+        auto oldest = std::min_element(_snapshotHistory.begin(), _snapshotHistory.end(),
+                                       [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        _snapshotHistory.erase(oldest);
       }
     }
 
@@ -630,7 +673,6 @@ namespace rtype::client {
     std::unordered_map<network::NetworkId, std::uint32_t> _lastScoreSequences;
     std::unordered_map<network::NetworkId, std::uint32_t> _destroyedEntities;
     std::vector<PendingPlayerSpawn> _pendingPlayerSpawns;
-    std::vector<network::EntityStateData> _snapshot;
 
     network::NetworkId _localNetId{0};
     std::uint64_t _sessionToken{0};
@@ -646,6 +688,8 @@ namespace rtype::client {
     engine::SnapshotClock* _snapshotClock{nullptr};
     std::vector<PendingDestroy> _pendingDestroys;
     std::size_t _lateSnapshots{0};
+    std::size_t _unknownBaseDeltas{0};
+    std::deque<std::pair<std::uint32_t, network::SnapshotState>> _snapshotHistory;
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};
