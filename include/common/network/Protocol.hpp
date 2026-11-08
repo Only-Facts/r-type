@@ -34,7 +34,8 @@ namespace rtype::network {
     AugmentUpdate = 0x14,
     ScoreUpdate = 0x15,
     GameStateSyncPacked = 0x31,
-    GameStateSyncDelta = 0x32
+    GameStateSyncDelta = 0x32,
+    InputAck = 0x33
   };
 
   #pragma pack(push, 1)

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <deque>
 #include <cmath>
 #include <cstdlib>
 #include <optional>
@@ -48,6 +49,12 @@ namespace rtype::server {
     float baseY{0.0f};
   };
 
+  struct QueuedInput {
+    std::uint32_t sequence{0};
+    gameplay::MovementInput movement;
+    bool shoot{false};
+  };
+
   struct ConnectedClient {
     network::NetworkId id;
     network::Endpoint endpoint;
@@ -66,6 +73,9 @@ namespace rtype::server {
     bool shootPressed{false};
     float hitCooldown{0.0f};
     gameplay::MovementInput movement;
+    std::deque<QueuedInput> pendingInputs;
+    std::uint32_t lastProcessedInput{0};
+    bool hasProcessedInput{false};
     std::uint32_t score{0};
     std::uint64_t sessionToken{0};
     std::uint32_t lastInputSequence{0};
@@ -224,6 +234,8 @@ namespace rtype::server {
     static constexpr std::size_t MAX_ACTIVE_ENTITIES = 48;
     static constexpr std::size_t MAX_SNAPSHOT_ENTITIES = 52;
     static constexpr std::uint64_t SNAPSHOT_KEYFRAME_INTERVAL = 60;
+    static constexpr std::size_t MAX_PENDING_INPUTS = 8;
+    static constexpr std::size_t MAX_INPUTS_PER_TICK = 2;
 
     static bool rectanglesOverlap(float ax, float ay, float aw, float ah,
                                   float bx, float by, float bw, float bh) {
@@ -434,19 +446,59 @@ namespace rtype::server {
       it->second.lastInputSequence = sequence;
       it->second.hasInputSequence = true;
       it->second.idleTime = 0.0f;
-      it->second.shootPressed = shoot;
 
-      if (it->second.dead) {
-        it->second.movement = {};
-        it->second.velX = 0.f;
-        it->second.velY = 0.f;
-        return;
+      auto& queue = it->second.pendingInputs;
+      if (queue.size() >= MAX_PENDING_INPUTS) queue.pop_front();
+      queue.push_back({sequence, gameplay::MovementInput{up, down, left, right}, shoot});
+    }
+
+    static void processQueuedInputs(ConnectedClient& client) {
+      std::size_t processed = 0;
+      while (!client.pendingInputs.empty() && processed < MAX_INPUTS_PER_TICK) {
+        const QueuedInput input = client.pendingInputs.front();
+        client.pendingInputs.pop_front();
+        client.movement = input.movement;
+        client.shootPressed = input.shoot;
+        const gameplay::MovementVector moved = gameplay::applyMovement(
+          {client.posX, client.posY}, input.movement, gameplay::INPUT_STEP_SECONDS, movementBounds());
+        client.posX = moved.x;
+        client.posY = moved.y;
+        const gameplay::MovementVector velocity = gameplay::movementVelocity(input.movement);
+        client.velX = velocity.x;
+        client.velY = velocity.y;
+        client.lastProcessedInput = input.sequence;
+        client.hasProcessedInput = true;
+        ++processed;
       }
+    }
 
-      it->second.movement = gameplay::MovementInput{up, down, left, right};
-      const gameplay::MovementVector velocity = gameplay::movementVelocity(it->second.movement);
-      it->second.velX = velocity.x;
-      it->second.velY = velocity.y;
+    static void discardQueuedInputs(ConnectedClient& client) {
+      if (!client.pendingInputs.empty()) {
+        client.lastProcessedInput = client.pendingInputs.back().sequence;
+        client.hasProcessedInput = true;
+        client.pendingInputs.clear();
+      }
+      client.movement = {};
+      client.shootPressed = false;
+      client.velX = 0.0f;
+      client.velY = 0.0f;
+    }
+
+    void sendInputAcks() {
+      for (const auto& [id, client] : _clients) {
+        if (!client.hasProcessedInput) continue;
+        network::PacketStreamWriter payload;
+        payload << client.lastProcessedInput << _simulationTick << client.posX << client.posY;
+        network::PacketHeader header{
+          network::PROTOCOL_MAGIC, network::PacketType::InputAck, _outgoingSeq++,
+          static_cast<std::uint16_t>(payload.getBuffer().size())
+        };
+        network::PacketStreamWriter writer;
+        writer << header;
+        auto packet = writer.getBuffer();
+        packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
+        sendDatagram(packet, client.endpoint, false);
+      }
     }
 
     static gameplay::MovementBounds movementBounds() {
@@ -522,14 +574,12 @@ namespace rtype::server {
         updateAugmentTimers(client, dt);
         client.hitCooldown = std::max(0.0f, client.hitCooldown - dt);
         if (client.dead) {
+          discardQueuedInputs(client);
           client.deathTimer -= dt;
           if (client.deathTimer <= 0.f) clientsToRemove.push_back(id);
           continue;
         }
-        const gameplay::MovementVector moved = gameplay::applyMovement(
-          {client.posX, client.posY}, client.movement, dt, movementBounds());
-        client.posX = moved.x;
-        client.posY = moved.y;
+        processQueuedInputs(client);
         client.shootCooldown = std::max(0.0f, client.shootCooldown - dt);
         if (client.shootPressed && client.shootCooldown <= 0.f) {
           client.shootCooldown = 0.25f;
@@ -1104,6 +1154,7 @@ namespace rtype::server {
 
     void broadcastGameState() {
       if (_clients.empty()) return;
+      sendInputAcks();
 
       std::unordered_map<network::NetworkId,
                          network::PackedEntityStateData> current;

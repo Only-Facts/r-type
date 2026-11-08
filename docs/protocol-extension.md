@@ -326,6 +326,36 @@ bounded retry count; duplicate packets are acknowledged but not applied twice.
 `PlayerInput` and snapshots remain unreliable because newer state supersedes
 older state.
 
+## 13. Input steps and `InputAck` (server -> client), type `0x33`
+
+The header `sequence` of a `PlayerInput` packet is its input number: it grows with
+every input the client sends, and the server rejects an input that is not newer than
+the last one received.
+
+Each `PlayerInput` is one movement step of `1/60` second. The client sends them at a
+fixed 60 Hz rate, whatever its frame rate. The server queues them per player (8 at
+most, the oldest is dropped when full) and applies at most 2 per simulation tick, in
+order, so a client cannot move faster by sending more inputs. A tick without a queued
+input does not move the player. The movement itself (speed 300 px/s, normalized
+diagonal, world bounds) is the shared `gameplay::applyMovement`
+(`include/common/gameplay/PlayerMovement.hpp`), used by both the server and the
+client prediction. Inputs received while the player is dead are acknowledged without
+moving.
+
+After every simulation update the server sends each player, unreliably, the result of
+its own inputs:
+
+| Field | Type | Description |
+|---|---:|---|
+| `lastInput` | `u32` | Number of the last input applied |
+| `tick` | `u32` | Simulation tick of this state |
+| `posX` | `f32` | Confirmed X position after that input |
+| `posY` | `f32` | Confirmed Y position after that input |
+
+Payload size: 16 bytes. The client predicts its own movement immediately, then uses
+this packet to replace its position with the confirmed one and replay the inputs the
+server has not applied yet. Collisions, damage and death stay decided by the server.
+
 ## Testing
 
 The runtime server implements the same authoritative gameplay rules. The optional

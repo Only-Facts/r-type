@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -381,6 +382,94 @@ static network::PacketData playerInputPacket(
   return packet;
 }
 
+struct InputAckInfo {
+  std::uint32_t lastInput{0};
+  std::uint32_t tick{0};
+  float x{0.0f};
+  float y{0.0f};
+};
+
+static std::optional<InputAckInfo> lastInputAck(const GameplayMockSocket& socket) {
+  std::optional<InputAckInfo> found;
+  for (const auto& sent : socket.sent) {
+    network::PacketStreamReader reader(sent.data);
+    network::PacketHeader header{};
+    reader >> header;
+    if (header.type != network::PacketType::InputAck) continue;
+    InputAckInfo info;
+    reader >> info.lastInput >> info.tick >> info.x >> info.y;
+    found = info;
+  }
+  return found;
+}
+
+static void testInputsAreAppliedOneStepEachAndAcknowledged() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 100.0f;
+  player.posY = 100.0f;
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+
+  for (std::uint32_t input = 10; input <= 12; ++input)
+    room.handlePacket(playerInputPacket(input, player.id, player.sessionToken, 0, 0, 0, 1, 0), player.endpoint);
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  assert(std::abs(player.posX - (100.0f + 2.0f * step)) < 0.001f);
+  assert(player.lastProcessedInput == 11);
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  assert(std::abs(player.posX - (100.0f + 3.0f * step)) < 0.001f);
+  assert(player.lastProcessedInput == 12);
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  assert(std::abs(player.posX - (100.0f + 3.0f * step)) < 0.001f);
+  assert(player.velX == gameplay::PLAYER_SPEED);
+
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  const auto ack = lastInputAck(socket);
+  assert(ack.has_value());
+  assert(ack->lastInput == 12);
+  assert(ack->tick == 3);
+  assert(std::abs(ack->x - player.posX) < 0.001f && ack->y == 100.0f);
+}
+
+static void testInputQueueIsBounded() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 100.0f;
+  player.posY = 100.0f;
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+
+  for (std::uint32_t input = 1; input <= 20; ++input)
+    room.handlePacket(playerInputPacket(input, player.id, player.sessionToken, 0, 0, 0, 1, 0), player.endpoint);
+  assert(player.pendingInputs.size() == 8);
+
+  for (int tick = 0; tick < 10; ++tick) server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  assert(player.lastProcessedInput == 20);
+  assert(std::abs(player.posX - (100.0f + 8.0f * step)) < 0.001f);
+}
+
+static void testDeadPlayerInputsAreAcknowledgedWithoutMoving() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& player = server::GameRoomTestAccess::addClient(room);
+  player.posX = 300.0f;
+  player.posY = 300.0f;
+  player.dead = true;
+  player.deathTimer = 10.0f;
+
+  room.handlePacket(playerInputPacket(5, player.id, player.sessionToken, 1, 0, 0, 1, 1), player.endpoint);
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  assert(player.lastProcessedInput == 5);
+  assert(player.posX == 300.0f && player.posY == 300.0f);
+  assert(!player.shootPressed);
+}
+
 static void testSessionValidationAndInputSequenceWrap() {
   GameplayMockSocket socket;
   std::uint32_t sequence = 1;
@@ -549,6 +638,9 @@ static void testFixedTickReportsDroppedSimulationTime() {
 int main() {
   testBonusPickupsAndAugments();
   testSharedPlayerMovement();
+  testInputsAreAppliedOneStepEachAndAcknowledged();
+  testInputQueueIsBounded();
+  testDeadPlayerInputsAreAcknowledgedWithoutMoving();
   testBossHitboxMatchesItsSprite();
   testBossProgressionAndScore();
   testSessionValidationAndInputSequenceWrap();
