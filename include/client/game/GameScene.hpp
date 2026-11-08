@@ -2,6 +2,7 @@
 #define RTYPE_GAME_GAMESCENE_HPP
 
 #include "engine/core/EngineContext.hpp"
+#include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/Components.hpp"
 #include "engine/scene/AScene.hpp"
 #include "game/AugmentCatalog.hpp"
@@ -57,6 +58,7 @@ namespace rtype::game {
     void playSoundId(const std::string& soundId);
 
     std::unique_ptr<network::INetworkSocket> _socket;
+    engine::SnapshotClock _snapshotClock;
     client::ClientNetworkManager _network;
     Hud _hud;
     EntityCatalog _catalog;

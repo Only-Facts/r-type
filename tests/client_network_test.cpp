@@ -1,6 +1,8 @@
+#include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/SnapshotBuffer.hpp"
 #include "network/ClientNetworkManager.hpp"
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -195,6 +197,48 @@ static void testLateSnapshotIsBufferedWithoutMovingTarget() {
   assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{12});
 }
 
+static bool near(double value, double expected) {
+  return std::abs(value - expected) < 0.001;
+}
+
+static void testSnapshotSamplingInterpolatesAndExtrapolates() {
+  engine::SnapshotBufferComponent buffer{{}, 8};
+  assert(!engine::sampleSnapshotPosition(buffer, 10.0, 60.0, 6.0));
+
+  engine::pushSnapshotSample(buffer, {10, {100.0f, 50.0f}, {}});
+  engine::pushSnapshotSample(buffer, {20, {200.0f, 150.0f}, {600.0f, 0.0f}});
+
+  auto position = engine::sampleSnapshotPosition(buffer, 15.0, 60.0, 6.0);
+  assert(position && near(position->x, 150.0) && near(position->y, 100.0));
+  position = engine::sampleSnapshotPosition(buffer, 5.0, 60.0, 6.0);
+  assert(position && near(position->x, 100.0));
+  position = engine::sampleSnapshotPosition(buffer, 25.0, 60.0, 6.0);
+  assert(position && near(position->x, 250.0) && near(position->y, 150.0));
+  position = engine::sampleSnapshotPosition(buffer, 40.0, 60.0, 6.0);
+  assert(position && near(position->x, 260.0));
+}
+
+static void testSnapshotClockFollowsServerWithDelay() {
+  engine::SnapshotClock clock(60.0, 0.1, 0.1);
+  assert(!clock.isSynchronized());
+  clock.observe(60);
+  assert(clock.isSynchronized());
+  assert(near(clock.nextRenderTick(), 54.0));
+
+  clock.advance(0.5f);
+  assert(near(clock.nextRenderTick(), 84.0));
+
+  clock.observe(85);
+  const double afterLatePacket = clock.nextRenderTick();
+  assert(afterLatePacket >= 84.0);
+
+  clock.advance(1.0f / 60.0f);
+  assert(clock.nextRenderTick() >= afterLatePacket);
+
+  clock.observe(6000);
+  assert(clock.nextRenderTick() > 5000.0);
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -284,6 +328,8 @@ int main() {
   testPackedDeltaSnapshotIsApplied();
   testSnapshotBufferOrderingAndBounds();
   testLateSnapshotIsBufferedWithoutMovingTarget();
+  testSnapshotSamplingInterpolatesAndExtrapolates();
+  testSnapshotClockFollowsServerWithDelay();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }

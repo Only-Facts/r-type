@@ -9,7 +9,9 @@ namespace rtype::engine {
   public:
     void update(Registry& registry, float dt) override {
       registry.each<TransformComponent, InterpolationComponent>(
-        [dt](Entity, TransformComponent& transform, InterpolationComponent& interp) {
+        [dt, &registry](Entity entity, TransformComponent& transform, InterpolationComponent& interp) {
+          const auto* buffer = registry.getComponent<SnapshotBufferComponent>(entity);
+          if (buffer && !buffer->samples.empty()) return;
           float factor = interp.speed * dt;
           if (factor > 1.0f) factor = 1.0f;
           transform.position.x += (transform.targetPosition.x - transform.position.x) * factor;

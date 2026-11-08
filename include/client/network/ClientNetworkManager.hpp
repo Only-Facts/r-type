@@ -1,6 +1,7 @@
 #ifndef CLIENTNETWORKMANAGER_HPP
 #define CLIENTNETWORKMANAGER_HPP
 
+#include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/Components.hpp"
 #include "engine/ecs/Registry.hpp"
 #include "engine/ecs/SnapshotBuffer.hpp"
@@ -137,6 +138,8 @@ namespace rtype::client {
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
+    void setSnapshotClock(engine::SnapshotClock* clock) { _snapshotClock = clock; }
+
     void setSnapshotBufferSize(std::size_t size) {
       _snapshotBufferSize = std::max(size, engine::MIN_SNAPSHOT_BUFFER_CAPACITY);
     }
@@ -357,6 +360,7 @@ namespace rtype::client {
             if (hasTick) recordSnapshotSample(state, tick);
             if (!staleSync) updateEntityState(state);
           }
+          if (hasTick && _snapshotClock) _snapshotClock->observe(tick);
           if (hasTick && (!_hasSnapshotTick || tick > _lastSnapshotTick)) {
             _lastSnapshotTick = tick;
             _hasSnapshotTick = true;
@@ -445,7 +449,7 @@ namespace rtype::client {
         entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
-      _registry.addComponent(entity, engine::SnapshotBufferComponent{{}, _snapshotBufferSize});
+      if (!isLocal) _registry.addComponent(entity, engine::SnapshotBufferComponent{{}, _snapshotBufferSize});
       _networkToEcs[netId] = RemoteEntity{entity, type};
       if (_onSpawn) _onSpawn(entity, netId, type, isLocal);
 
@@ -570,6 +574,7 @@ namespace rtype::client {
     std::uint32_t _lastSnapshotTick{0};
     bool _hasSnapshotTick{false};
     std::size_t _snapshotBufferSize{32};
+    engine::SnapshotClock* _snapshotClock{nullptr};
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

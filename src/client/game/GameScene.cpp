@@ -11,6 +11,7 @@
 #include "engine/scene/SceneManager.hpp"
 #include "engine/systems/AnimationSystem.hpp"
 #include "engine/systems/InterpolationSystem.hpp"
+#include "engine/systems/SnapshotInterpolationSystem.hpp"
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
 #include "exception.hpp"
@@ -134,6 +135,8 @@ namespace rtype::game {
     addSystem<engine::MovementSystem>();
     addSystem<engine::ParallaxSystem>(_context.window);
     addSystem<engine::InterpolationSystem>();
+    addSystem<engine::SnapshotInterpolationSystem>(_snapshotClock);
+    _network.setSnapshotClock(&_snapshotClock);
 
     StarfieldSpawner starfield(_registry, _factory);
     starfield.spawn(StarfieldSpawner::loadSettings(_context.config, SECTION_STARFIELD), _context.window.getSize());
@@ -180,6 +183,7 @@ namespace rtype::game {
       return;
     }
     sendInputs();
+    _snapshotClock.advance(dt);
     _network.update(dt);
     keepLocalShipOnScreen();
     _hud.update(dt);
