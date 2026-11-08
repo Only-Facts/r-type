@@ -77,6 +77,7 @@ namespace rtype::server {
     std::deque<QueuedInput> pendingInputs;
     std::uint32_t lastProcessedInput{0};
     bool hasProcessedInput{false};
+    bool needsFullSnapshot{true};
     std::uint32_t score{0};
     std::uint64_t sessionToken{0};
     std::uint32_t lastInputSequence{0};
@@ -148,6 +149,11 @@ namespace rtype::server {
             if (header.payloadSize == sizeof(network::NetworkId) +
                 sizeof(std::uint64_t))
               handleDisconnect(reader, sender);
+            break;
+          case network::PacketType::SnapshotRequest:
+            if (header.payloadSize == sizeof(network::NetworkId) +
+                sizeof(std::uint64_t))
+              handleSnapshotRequest(reader, sender);
             break;
           default:
             break;
@@ -313,7 +319,6 @@ namespace rtype::server {
       client.sessionToken = generateSessionToken();
       _clients[netId] = client;
       const ConnectedClient& connected = _clients.at(netId);
-      _forceFullSnapshot = true;
 
       sendConnectAck(connected);
       sendSpawnPlayer(connected, sender);
@@ -519,6 +524,21 @@ namespace rtype::server {
         return;
       }
       removeClient(netId);
+    }
+
+    void handleSnapshotRequest(network::PacketStreamReader& reader,
+                               const network::Endpoint& sender) {
+      network::NetworkId netId{};
+      std::uint64_t sessionToken{};
+      reader >> netId >> sessionToken;
+      auto it = _clients.find(netId);
+      if (it == _clients.end() || !sameEndpoint(it->second.endpoint, sender) ||
+          it->second.sessionToken != sessionToken) {
+        if (_metrics)
+          _metrics->rejectedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      it->second.needsFullSnapshot = true;
     }
 
     void removeClient(network::NetworkId netId) {
@@ -1176,19 +1196,25 @@ namespace rtype::server {
       ++_snapshotTick;
       const bool keyframe = _forceFullSnapshot || !_hasPreviousSnapshot ||
         (_snapshotTick % SNAPSHOT_KEYFRAME_INTERVAL == 0);
-      network::PacketData packet;
-      if (keyframe) {
-        packet = snapshotPacket(network::PacketType::GameStateSyncPacked, fullSnapshotPayload(current));
-      } else {
+      const bool someoneNeedsFull = std::any_of(_clients.begin(), _clients.end(),
+        [](const auto& entry) { return entry.second.needsFullSnapshot; });
+      network::PacketData deltaPacket;
+      if (!keyframe) {
         const network::SnapshotDelta delta =
           network::makeSnapshotDelta(_previousSnapshot, _previousSnapshotTick, current, _simulationTick);
-        if (delta.changed.empty() && delta.removed.empty()) return;
+        if (delta.changed.empty() && delta.removed.empty() && !someoneNeedsFull) return;
         network::PacketStreamWriter payload;
         network::writeSnapshotDelta(payload, delta);
-        packet = snapshotPacket(network::PacketType::GameStateSyncDelta, payload.getBuffer());
+        deltaPacket = snapshotPacket(network::PacketType::GameStateSyncDelta, payload.getBuffer());
       }
-      for (const auto& [id, client] : _clients)
-        sendDatagram(packet, client.endpoint, false);
+      network::PacketData fullPacket;
+      if (keyframe || someoneNeedsFull)
+        fullPacket = snapshotPacket(network::PacketType::GameStateSyncPacked, fullSnapshotPayload(current));
+      for (auto& [id, client] : _clients) {
+        const bool full = keyframe || client.needsFullSnapshot;
+        sendDatagram(full ? fullPacket : deltaPacket, client.endpoint, false);
+        client.needsFullSnapshot = false;
+      }
 
       _previousSnapshot = std::move(current);
       _previousSnapshotTick = _simulationTick;

@@ -600,6 +600,62 @@ static void testSnapshotDeltaNamesItsBaseAndLifecycle() {
   assert(delta.removed.size() == 1 && delta.removed.front() == 2500);
 }
 
+static network::PacketData snapshotRequestPacket(network::NetworkId id, std::uint64_t token) {
+  network::PacketStreamWriter payload;
+  payload << id << token;
+  network::PacketHeader header{
+    network::PROTOCOL_MAGIC, network::PacketType::SnapshotRequest, 7,
+    static_cast<std::uint16_t>(payload.getBuffer().size())
+  };
+  network::PacketStreamWriter writer;
+  writer << header;
+  auto packet = writer.getBuffer();
+  packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
+  return packet;
+}
+
+static network::PacketType lastTypeFor(const GameplayMockSocket& socket, unsigned short port) {
+  for (auto sent = socket.sent.rbegin(); sent != socket.sent.rend(); ++sent)
+    if (sent->endpoint.port == port) return packetType(*sent);
+  return network::PacketType::Ping;
+}
+
+static void testFullSnapshotIsSentOnlyToTheRequester() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  auto& first = server::GameRoomTestAccess::addClient(room, 1000);
+  auto& second = server::GameRoomTestAccess::addClient(room, 1001);
+  first.posX = 100.0f;
+  second.posX = 300.0f;
+
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(lastTypeFor(socket, first.endpoint.port) == network::PacketType::GameStateSyncPacked);
+  assert(lastTypeFor(socket, second.endpoint.port) == network::PacketType::GameStateSyncPacked);
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  first.posX += 8.0f;
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(lastTypeFor(socket, first.endpoint.port) == network::PacketType::GameStateSyncDelta);
+  assert(lastTypeFor(socket, second.endpoint.port) == network::PacketType::GameStateSyncDelta);
+
+  room.handlePacket(snapshotRequestPacket(second.id, second.sessionToken + 1), second.endpoint);
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  const std::size_t before = socket.sent.size();
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(socket.sent.size() == before);
+
+  room.handlePacket(snapshotRequestPacket(second.id, second.sessionToken), second.endpoint);
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(lastTypeFor(socket, first.endpoint.port) == network::PacketType::GameStateSyncDelta);
+  assert(lastTypeFor(socket, second.endpoint.port) == network::PacketType::GameStateSyncPacked);
+
+  server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+  first.posX += 8.0f;
+  server::GameRoomTestAccess::broadcastSnapshot(room);
+  assert(lastTypeFor(socket, second.endpoint.port) == network::PacketType::GameStateSyncDelta);
+}
+
 static void testSnapshotDeltaAndKeyframeCadence() {
   GameplayMockSocket socket;
   std::uint32_t sequence = 1;
@@ -699,6 +755,7 @@ int main() {
   testRammingDoesNotAwardScore();
   testSnapshotDeltaAndKeyframeCadence();
   testSnapshotDeltaNamesItsBaseAndLifecycle();
+  testFullSnapshotIsSentOnlyToTheRequester();
   testDisconnectRemovesOwnedProjectiles();
   testFixedTickReportsDroppedSimulationTime();
   return 0;

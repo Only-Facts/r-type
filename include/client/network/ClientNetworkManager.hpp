@@ -93,6 +93,9 @@ namespace rtype::client {
       _hasSnapshotTick = false;
       _hasInputAck = false;
       _snapshotHistory.clear();
+      _pendingDeltas.clear();
+      _fullRequestCooldown = 0.0f;
+      _awaitingFullSnapshot = false;
     }
 
     void update(float dt) {
@@ -107,6 +110,7 @@ namespace rtype::client {
       }
       processIncomingPackets();
       flushPendingDestroys(dt);
+      updatePendingDeltas(dt);
     }
 
     std::optional<std::uint32_t> sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
@@ -161,6 +165,7 @@ namespace rtype::client {
 
     [[nodiscard]] std::size_t getLateSnapshotCount() const { return _lateSnapshots; }
     [[nodiscard]] std::size_t getUnknownBaseDeltaCount() const { return _unknownBaseDeltas; }
+    [[nodiscard]] std::size_t getFullSnapshotRequestCount() const { return _fullSnapshotRequests; }
 
     [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
       if (!_hasSnapshotTick) return std::nullopt;
@@ -392,6 +397,7 @@ namespace rtype::client {
             reader >> packed;
             state[packed.netId] = packed;
           }
+          _awaitingFullSnapshot = false;
           acceptSnapshot(tick, std::move(state));
           break;
         }
@@ -404,6 +410,14 @@ namespace rtype::client {
 
     static constexpr std::size_t MAX_SNAPSHOT_COUNT = 256;
     static constexpr std::size_t MAX_SNAPSHOT_HISTORY = 64;
+    static constexpr std::size_t MAX_PENDING_DELTAS = 16;
+    static constexpr float PENDING_DELTA_TIMEOUT = 0.1f;
+    static constexpr float FULL_REQUEST_INTERVAL = 0.25f;
+
+    struct PendingDelta {
+      network::SnapshotDelta delta;
+      float waited;
+    };
 
     void acceptSnapshot(std::uint32_t tick, network::SnapshotState state) {
       const bool late = _hasSnapshotTick && tick <= _lastSnapshotTick;
@@ -420,15 +434,73 @@ namespace rtype::client {
         _hasSnapshotTick = true;
       }
       storeSnapshot(tick, std::move(state));
+      resolvePendingDeltas();
     }
 
     void handleSnapshotDelta(const network::SnapshotDelta& delta) {
+      if (findSnapshot(delta.tick)) return;
       const network::SnapshotState* base = findSnapshot(delta.baseTick);
       if (!base) {
         ++_unknownBaseDeltas;
+        if (_pendingDeltas.size() >= MAX_PENDING_DELTAS) {
+          _pendingDeltas.clear();
+          _awaitingFullSnapshot = true;
+          requestFullSnapshot();
+        }
+        _pendingDeltas.push_back({delta, 0.0f});
         return;
       }
       acceptSnapshot(delta.tick, network::applySnapshotDelta(*base, delta));
+      resolvePendingDeltas();
+    }
+
+    void resolvePendingDeltas() {
+      bool progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (auto pending = _pendingDeltas.begin(); pending != _pendingDeltas.end(); ++pending) {
+          if (findSnapshot(pending->delta.tick)) {
+            _pendingDeltas.erase(pending);
+            progressed = true;
+            break;
+          }
+          const network::SnapshotState* base = findSnapshot(pending->delta.baseTick);
+          if (!base) continue;
+          const network::SnapshotDelta delta = pending->delta;
+          _pendingDeltas.erase(pending);
+          acceptSnapshot(delta.tick, network::applySnapshotDelta(*base, delta));
+          progressed = true;
+          break;
+        }
+      }
+    }
+
+    void updatePendingDeltas(float dt) {
+      const float elapsed = std::max(dt, 0.0f);
+      _fullRequestCooldown = std::max(0.0f, _fullRequestCooldown - elapsed);
+      bool expired = false;
+      for (auto& pending : _pendingDeltas) {
+        pending.waited += elapsed;
+        if (pending.waited >= PENDING_DELTA_TIMEOUT) expired = true;
+      }
+      if (expired) {
+        _pendingDeltas.clear();
+        _awaitingFullSnapshot = true;
+      }
+      if (_awaitingFullSnapshot) requestFullSnapshot();
+    }
+
+    void requestFullSnapshot() {
+      if (!_isConnected || _fullRequestCooldown > 0.0f) return;
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::SnapshotRequest, _outgoingSeq++,
+        static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
+      };
+      network::PacketStreamWriter writer;
+      writer << header << _localNetId << _sessionToken;
+      _socket.send(writer.getBuffer(), _serverEndpoint);
+      _fullRequestCooldown = FULL_REQUEST_INTERVAL;
+      ++_fullSnapshotRequests;
     }
 
     const network::SnapshotState* findSnapshot(std::uint32_t tick) const {
@@ -689,6 +761,10 @@ namespace rtype::client {
     std::vector<PendingDestroy> _pendingDestroys;
     std::size_t _lateSnapshots{0};
     std::size_t _unknownBaseDeltas{0};
+    std::size_t _fullSnapshotRequests{0};
+    float _fullRequestCooldown{0.0f};
+    bool _awaitingFullSnapshot{false};
+    std::vector<PendingDelta> _pendingDeltas;
     std::deque<std::pair<std::uint32_t, network::SnapshotState>> _snapshotHistory;
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;

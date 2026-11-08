@@ -495,6 +495,81 @@ static void testDeltaNeedsAKnownBase() {
   assert(transform->targetPosition.x == 440.0f);
 }
 
+static std::size_t sentOfType(const ClientMockSocket& socket, network::PacketType type) {
+  std::size_t count = 0;
+  for (const auto& [data, endpoint] : socket.sent) {
+    network::PacketStreamReader reader(data);
+    network::PacketHeader header{};
+    reader >> header;
+    if (header.type == type) ++count;
+  }
+  return count;
+}
+
+static void testEarlyDeltaWaitsForItsBase() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::Entity remoteEntity = 0;
+  manager.setOnEntitySpawned(
+    [&](engine::Entity entity, network::NetworkId, network::ext::EntityType, bool) { remoteEntity = entity; });
+  spawnRemoteEntity(socket, manager);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  socket.enqueue(fullPacket(3, 5, stateAt(2000, 100.0f)), server);
+  socket.enqueue(deltaPacket(5, stateAt(2000, 110.0f), 6, stateAt(2000, 120.0f), 7), server);
+  socket.enqueue(deltaPacket(4, stateAt(2000, 100.0f), 5, stateAt(2000, 110.0f), 6), server);
+  manager.update(0.016f);
+  assert(manager.getUnknownBaseDeltaCount() == 1);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{7});
+  assert(registry.getComponent<engine::TransformComponent>(remoteEntity)->targetPosition.x == 120.0f);
+  const auto* buffer = registry.getComponent<engine::SnapshotBufferComponent>(remoteEntity);
+  assert((bufferedTicks(*buffer) == std::vector<std::uint32_t>{5, 6, 7}));
+
+  manager.update(0.2f);
+  assert(manager.getFullSnapshotRequestCount() == 0);
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 0);
+}
+
+static void testLostBaseRequestsFullSnapshot() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  spawnRemoteEntity(socket, manager);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  socket.enqueue(fullPacket(3, 5, stateAt(2000, 100.0f)), server);
+  socket.enqueue(deltaPacket(4, stateAt(2000, 110.0f), 6, stateAt(2000, 120.0f), 7), server);
+  manager.update(0.05f);
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 0);
+
+  manager.update(0.06f);
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 1);
+  const auto& request = socket.sent.back().first;
+  network::PacketStreamReader reader(request);
+  network::PacketHeader header{};
+  network::NetworkId id{};
+  std::uint64_t token{};
+  reader >> header >> id >> token;
+  assert(header.type == network::PacketType::SnapshotRequest);
+  assert(id == 1000 && token == 42);
+
+  socket.enqueue(deltaPacket(5, stateAt(2000, 130.0f), 8, stateAt(2000, 140.0f), 9), server);
+  manager.update(0.11f);
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 1);
+
+  socket.enqueue(deltaPacket(6, stateAt(2000, 150.0f), 10, stateAt(2000, 160.0f), 11), server);
+  manager.update(0.11f);
+  manager.update(0.11f);
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 2);
+
+  socket.enqueue(fullPacket(7, 12, stateAt(2000, 170.0f)), server);
+  socket.enqueue(deltaPacket(8, stateAt(2000, 170.0f), 12, stateAt(2000, 180.0f), 13), server);
+  manager.update(0.2f);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{13});
+  assert(sentOfType(socket, network::PacketType::SnapshotRequest) == 2);
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -594,6 +669,8 @@ int main() {
   testPredictionCorrectionIsSmoothedOrSnapped();
   testPredictionHandlesSequenceWrapAndStop();
   testDeltaNeedsAKnownBase();
+  testEarlyDeltaWaitsForItsBase();
+  testLostBaseRequestsFullSnapshot();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }

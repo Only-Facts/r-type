@@ -556,6 +556,29 @@ static void testUnknownRoomIsRejected() {
   assert(roomStatus(socket.sent.front()) == 1);
 }
 
+static void testSnapshotRequestIsRoutedToTheRoom() {
+  MockSocket socket;
+  server::ServerNetworkManager manager(socket);
+  const network::Endpoint client{"127.0.0.1", 5266};
+  socket.enqueue(packet(network::PacketType::ConnectReq), client);
+  manager.update(0.016f);
+  auto ack = std::find_if(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+    return packetType(sent) == network::PacketType::ConnectAck;
+  });
+  assert(ack != socket.sent.end());
+  const auto connected = connectInfo(*ack);
+  manager.update(0.034f);
+
+  network::PacketStreamWriter request;
+  request << connected.playerId << connected.sessionToken;
+  socket.clearSent();
+  socket.enqueue(packet(network::PacketType::SnapshotRequest, request.getBuffer(), 2), client);
+  manager.update(0.034f);
+  assert(std::any_of(socket.sent.begin(), socket.sent.end(), [&](const auto& sent) {
+    return packetType(sent) == network::PacketType::GameStateSyncPacked && sent.endpoint.port == client.port;
+  }));
+}
+
 int main() {
   testDefaultRoomCompatibility();
   testCreateListAndJoinRooms();
@@ -570,6 +593,7 @@ int main() {
   testReceiveThreadDoesNotOwnSimulationState();
   testServerReliableAcknowledgementFlow();
   testUnknownRoomIsRejected();
+  testSnapshotRequestIsRoutedToTheRoom();
   std::cout << "server room tests passed\n";
   return 0;
 }

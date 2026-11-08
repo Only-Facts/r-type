@@ -283,6 +283,7 @@ namespace rtype::server {
           routeToExistingRoom(data, sender);
           break;
         case network::PacketType::Disconnect:
+        case network::PacketType::SnapshotRequest:
           if (header.payloadSize != sizeof(network::NetworkId) +
               sizeof(std::uint64_t)) {
             _metrics.malformedPackets.fetch_add(1,
