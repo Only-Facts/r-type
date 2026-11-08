@@ -11,6 +11,7 @@
 #include "game/Hud.hpp"
 #include "game/SkinCatalog.hpp"
 #include "network/ClientNetworkManager.hpp"
+#include "network/LocalPrediction.hpp"
 #include "network/INetworkSocket.hpp"
 #include <memory>
 #include <optional>
@@ -48,7 +49,7 @@ namespace rtype::game {
     void validateCatalog() const;
     void updateConnectionStatus(float dt);
     void sendInputs();
-    void keepLocalShipOnScreen();
+    void applyLocalPrediction(float dt);
     void updateNetworkDebugLine();
     void sendFixedStepInputs(float dt);
 
@@ -89,7 +90,6 @@ namespace rtype::game {
     std::optional<network::NetworkId> _bossNetId;
     std::string _bossLabel;
     bool _bossMusicPlaying{false};
-    engine::Vector2f _localShipSize{0.0f, 0.0f};
 
     std::string _host;
     unsigned short _port;
@@ -112,7 +112,8 @@ namespace rtype::game {
     float _hitFlashDuration;
     std::string _menuAction;
     std::string _menuScene;
-    engine::Vector2f _screenSize;
+    client::LocalPrediction _prediction;
+    bool _predictionEnabled;
   };
 }
 

@@ -2,6 +2,7 @@
 #include "engine/ecs/SnapshotBuffer.hpp"
 #include "engine/systems/SnapshotInterpolationSystem.hpp"
 #include "network/ClientNetworkManager.hpp"
+#include "network/LocalPrediction.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -369,6 +370,73 @@ static void testInputNumbersAndAcknowledgements() {
   assert(acks.front().x == 110.0f && acks.front().y == 200.0f);
 }
 
+static void testPredictionMatchesServerAndReplaysPendingInputs() {
+  client::LocalPrediction prediction;
+  const gameplay::MovementInput right{false, false, false, true};
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+  prediction.applyInput(1, right);
+  assert(prediction.pendingCount() == 0);
+
+  prediction.reset({100.0f, 100.0f});
+  prediction.applyInput(1, right);
+  prediction.applyInput(2, right);
+  prediction.applyInput(3, right);
+  assert(near(prediction.predicted().x, 100.0 + 3.0 * step));
+  assert(prediction.pendingCount() == 3);
+
+  const auto confirmed = gameplay::applyMovement({100.0f, 100.0f}, right, gameplay::INPUT_STEP_SECONDS);
+  prediction.reconcile(1, confirmed);
+  assert(prediction.pendingCount() == 2);
+  assert(near(prediction.predicted().x, 100.0 + 3.0 * step));
+  assert(near(prediction.lastCorrection(), 0.0));
+  assert(near(prediction.displayed().x, prediction.predicted().x));
+}
+
+static void testPredictionCorrectionIsSmoothedOrSnapped() {
+  client::LocalPrediction prediction;
+  prediction.configure({120, 12.0f, 120.0f, {}});
+  const gameplay::MovementInput right{false, false, false, true};
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+  prediction.reset({100.0f, 100.0f});
+  prediction.applyInput(1, right);
+  prediction.applyInput(2, right);
+
+  const auto shownBefore = prediction.displayed();
+  prediction.reconcile(1, {100.0f + step, 130.0f});
+  assert(near(prediction.lastCorrection(), 30.0));
+  assert(near(prediction.predicted().x, 100.0 + 2.0 * step) && near(prediction.predicted().y, 130.0));
+  assert(near(prediction.displayed().x, shownBefore.x) && near(prediction.displayed().y, shownBefore.y));
+
+  prediction.update(0.1f);
+  assert(prediction.displayed().y > 100.0f && prediction.displayed().y < 130.0f);
+  prediction.update(2.0f);
+  assert(near(prediction.displayed().y, 130.0));
+
+  prediction.reconcile(2, {800.0f, 600.0f});
+  assert(prediction.lastCorrection() > 120.0f);
+  assert(near(prediction.displayed().x, 800.0) && near(prediction.displayed().y, 600.0));
+  assert(prediction.pendingCount() == 0);
+}
+
+static void testPredictionHandlesSequenceWrapAndStop() {
+  client::LocalPrediction prediction;
+  const gameplay::MovementInput down{false, true, false, false};
+  prediction.reset({50.0f, 50.0f});
+  prediction.applyInput(0xFFFFFFFEu, down);
+  prediction.applyInput(0xFFFFFFFFu, down);
+  prediction.applyInput(1u, down);
+  prediction.reconcile(0xFFFFFFFFu, {50.0f, 60.0f});
+  assert(prediction.pendingCount() == 1);
+  assert(near(prediction.predicted().y, 65.0));
+
+  prediction.stop();
+  assert(!prediction.active());
+  prediction.applyInput(2u, down);
+  prediction.reconcile(2u, {0.0f, 0.0f});
+  assert(prediction.pendingCount() == 0);
+  assert(near(prediction.predicted().y, 65.0));
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -464,6 +532,9 @@ int main() {
   testRemoteDestroyWaitsForRenderTime();
   testDestroyIsImmediateWithoutSnapshotClock();
   testInputNumbersAndAcknowledgements();
+  testPredictionMatchesServerAndReplaysPendingInputs();
+  testPredictionCorrectionIsSmoothedOrSnapped();
+  testPredictionHandlesSequenceWrapAndStop();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }
