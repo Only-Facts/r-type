@@ -1,6 +1,7 @@
 #ifndef GAMEROOM_HPP
 #define GAMEROOM_HPP
 
+#include "gameplay/PlayerMovement.hpp"
 #include "network/INetworkSocket.hpp"
 #include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
@@ -64,6 +65,7 @@ namespace rtype::server {
     float shootCooldown{0.f};
     bool shootPressed{false};
     float hitCooldown{0.0f};
+    gameplay::MovementInput movement;
     std::uint32_t score{0};
     std::uint64_t sessionToken{0};
     std::uint32_t lastInputSequence{0};
@@ -435,23 +437,20 @@ namespace rtype::server {
       it->second.shootPressed = shoot;
 
       if (it->second.dead) {
+        it->second.movement = {};
         it->second.velX = 0.f;
         it->second.velY = 0.f;
         return;
       }
 
-      float speed = 300.0f;
-      it->second.velX = 0.0f;
-      it->second.velY = 0.0f;
-      if (up) it->second.velY -= speed;
-      if (down) it->second.velY += speed;
-      if (left) it->second.velX -= speed;
-      if (right) it->second.velX += speed;
-      const float magnitude = std::hypot(it->second.velX, it->second.velY);
-      if (magnitude > speed) {
-        it->second.velX *= speed / magnitude;
-        it->second.velY *= speed / magnitude;
-      }
+      it->second.movement = gameplay::MovementInput{up, down, left, right};
+      const gameplay::MovementVector velocity = gameplay::movementVelocity(it->second.movement);
+      it->second.velX = velocity.x;
+      it->second.velY = velocity.y;
+    }
+
+    static gameplay::MovementBounds movementBounds() {
+      return gameplay::MovementBounds{WORLD_WIDTH, WORLD_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT};
     }
 
     void handleDisconnect(network::PacketStreamReader& reader,
@@ -527,10 +526,10 @@ namespace rtype::server {
           if (client.deathTimer <= 0.f) clientsToRemove.push_back(id);
           continue;
         }
-        client.posX = std::clamp(client.posX + client.velX * dt,
-                                 0.0f, WORLD_WIDTH - PLAYER_WIDTH);
-        client.posY = std::clamp(client.posY + client.velY * dt,
-                                 0.0f, WORLD_HEIGHT - PLAYER_HEIGHT);
+        const gameplay::MovementVector moved = gameplay::applyMovement(
+          {client.posX, client.posY}, client.movement, dt, movementBounds());
+        client.posX = moved.x;
+        client.posY = moved.y;
         client.shootCooldown = std::max(0.0f, client.shootCooldown - dt);
         if (client.shootPressed && client.shootCooldown <= 0.f) {
           client.shootCooldown = 0.25f;

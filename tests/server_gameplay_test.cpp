@@ -1,6 +1,7 @@
 #include "GameRoom.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -149,6 +150,22 @@ static std::vector<GameplayMockSocket::SentPacket> packetsOf(
       result.push_back(packet);
   }
   return result;
+}
+
+
+static void testSharedPlayerMovement() {
+  const gameplay::MovementBounds bounds{1920.0f, 1080.0f, 33.0f, 34.0f};
+  auto position = gameplay::applyMovement({100.0f, 100.0f}, {false, false, false, true}, 1.0f / 60.0f, bounds);
+  assert(std::abs(position.x - 105.0f) < 0.001f && position.y == 100.0f);
+
+  const auto diagonal = gameplay::movementVelocity({true, false, false, true});
+  assert(std::abs(std::hypot(diagonal.x, diagonal.y) - gameplay::PLAYER_SPEED) < 0.01f);
+  assert(diagonal.x > 0.0f && diagonal.y < 0.0f);
+
+  position = gameplay::applyMovement({1880.0f, 1040.0f}, {false, true, false, true}, 1.0f, bounds);
+  assert(position.x == 1920.0f - 33.0f && position.y == 1080.0f - 34.0f);
+  position = gameplay::applyMovement({2.0f, 2.0f}, {true, false, true, false}, 1.0f, bounds);
+  assert(position.x == 0.0f && position.y == 0.0f);
 }
 
 static void testBonusPickupsAndAugments() {
@@ -531,6 +548,7 @@ static void testFixedTickReportsDroppedSimulationTime() {
 
 int main() {
   testBonusPickupsAndAugments();
+  testSharedPlayerMovement();
   testBossHitboxMatchesItsSprite();
   testBossProgressionAndScore();
   testSessionValidationAndInputSequenceWrap();
