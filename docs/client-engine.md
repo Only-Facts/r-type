@@ -171,12 +171,13 @@ A scene can add its own lines through `_context.debug.lines["name"]`. The game s
 a network line (`[network] debug_text`):
 
 ```
-NET  tick 675  delay 100 ms  buffer 31/32  late 198  remote 21
+NET  tick 675  delay 100 ms  buffer 31/32  late 198  remote 21  pending 9  correction 0 px
 ```
 
 `tick` is the newest server tick received, `buffer` the average number of snapshots kept
 per remote entity, `late` the number of snapshots that arrived after a newer one and were
-still used, `remote` the number of interpolated entities.
+still used, `remote` the number of interpolated entities, `pending` the local inputs not
+confirmed by the server yet, `correction` the size of the last prediction correction.
 
 ### Remote entity interpolation
 
@@ -235,6 +236,39 @@ python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
 `python3 scripts/lag_relay.py --help` lists the options (latency, jitter, reordering, loss,
 impaired direction).
 
+### Local prediction and server reconciliation
+
+The local ship answers the keys immediately, while the server keeps the final word on
+positions, collisions, damage and death.
+
+1. The game scene sends one `PlayerInput` per fixed step of 1/60 s
+   (`server_tick_rate`), whatever the frame rate. Its packet sequence is the input
+   number, growing with every input.
+2. `LocalPrediction` (`network/LocalPrediction.hpp`) applies each input at once with the
+   shared `gameplay::applyMovement` (`include/common/gameplay/PlayerMovement.hpp`), the
+   exact function the server uses, and keeps the inputs not confirmed yet.
+3. The server applies the inputs one step each, in order, and answers with `InputAck`
+   (`0x33`): last input applied and confirmed position.
+4. On `InputAck`, the client drops the confirmed inputs, starts again from the confirmed
+   position and replays the remaining ones. When the result differs from what was
+   displayed (an input lost or rejected on the way), the difference is kept as a visual
+   offset that fades out (`prediction_correction_speed`), so the ship never jumps. Above
+   `prediction_snap_distance` the ship is moved at once (respawn, long freeze).
+5. Only the movement of the local ship is predicted. Shots, hits, health and death come
+   from the server. When the local player dies, the prediction stops.
+
+| Key (`[network]`) | Default | Why |
+|---|---|---|
+| `prediction` | `true` | `false` brings back the server-driven ship, useful to compare. |
+| `prediction_correction_speed` | `12` | The visual offset is divided by e (about 2.7) every 1/12 s, so a small correction is gone in about 0.25 s without a visible jump. |
+| `prediction_snap_distance` | `120` | 0.4 s of movement at 300 px/s. A larger error is not a network hiccup but a teleport, so it is applied at once. |
+| `prediction_max_pending_inputs` | `120` | 2 s of inputs at 60 Hz. Older unconfirmed inputs are dropped, which bounds the memory and the replay cost if the server stops answering. |
+
+With `scripts/lag_relay.py --direction both` (30 ms + 0 to 60 ms of jitter each way and
+10 % reordering, so a 60 to 180 ms round trip), the overlay shows 6 to 11 pending inputs
+and corrections of 0 to 5 px: the ship moves on the first frame of a key press, and the
+rare correction (an input the relay delivered too late for the server) fades out.
+
 ### Add a backend (SDL, Raylib...)
 
 Implement `engine::IBackend` (window, input, textures, UDP socket) under
@@ -249,7 +283,7 @@ Implement `engine::IBackend` (window, input, textures, UDP socket) under
 | `[window]`    | `title`, `width`, `height`, `framerate` (0 = unlimited), `vsync` |
 | `[input]`     | `action = key [key...]` |
 | `[audio]`     | `enabled`, `muted`, `master_volume`, `music_volume`, `sfx_volume` |
-| `[network]`   | `host`, `port`, `interpolation_speed` (local ship), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `debug_text`, `connect_timeout` |
+| `[network]`   | `host`, `port`, `interpolation_speed` (local ship without prediction), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `prediction`, `prediction_correction_speed`, `prediction_snap_distance`, `prediction_max_pending_inputs`, `debug_text`, `connect_timeout` |
 | `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
 | `[title]`     | `font`, `title_*`, `subtitle_*`, `prompt_*`, `difficulty_*`, `start_action`, `next_scene`, `music`, `start_sound`, `server_text`, `controls`, `label_<action>` |
 | `[skins]`     | `list`, `default`; one `[skin:<id>]` per ship: `label`, `asset`, `color`. The index in `list` is the value sent on the network |

@@ -9,7 +9,8 @@ same game over UDP.
 ## Features
 
 - Authoritative UDP server: the server owns the game state, clients only send inputs and display what they receive
-- Up to 4 players in the same game, with smooth movement through client-side interpolation
+- Up to 4 players in the same game, with remote entities interpolated from a buffer of timed snapshots
+- Local prediction with server reconciliation: your ship answers the keys immediately, the server keeps the final word
 - Title screen with difficulty selection (Easy, Normal, Hard)
 - Ship selection screen with 5 ships, the chosen ship is shown to every player
 - Enemies (Bydos) that fly across the screen and shoot forward, aiming at players ahead of them in Hard mode
@@ -104,8 +105,9 @@ python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
 ./build/r-type_client -p 4243
 ```
 
+Use `--direction both` to also delay the inputs and see the local prediction at work.
 Press F3 in game to see the network line of the debug overlay (server tick, buffered
-snapshots, late snapshots).
+snapshots, late snapshots, pending inputs, last correction).
 
 ### Server options
 
