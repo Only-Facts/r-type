@@ -3,6 +3,7 @@
 
 #include "engine/ecs/Components.hpp"
 #include "engine/ecs/Registry.hpp"
+#include "engine/ecs/SnapshotBuffer.hpp"
 #include "exception.hpp"
 #include "network/INetworkSocket.hpp"
 #include "network/PacketStream.hpp"
@@ -136,6 +137,10 @@ namespace rtype::client {
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
+    void setSnapshotBufferSize(std::size_t size) {
+      _snapshotBufferSize = std::max(size, engine::MIN_SNAPSHOT_BUFFER_CAPACITY);
+    }
+
     [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
       if (!_hasSnapshotTick) return std::nullopt;
       return _lastSnapshotTick;
@@ -218,8 +223,8 @@ namespace rtype::client {
         header.type == network::PacketType::GameStateSync ||
         header.type == network::PacketType::GameStateSyncPacked ||
         header.type == network::PacketType::GameStateSyncDelta;
-      if (isSync && !isSequenceNewer(header.sequence, _lastSyncSeq,
-                                     _hasSyncSequence)) return;
+      const bool staleSync = isSync && !isSequenceNewer(header.sequence, _lastSyncSeq, _hasSyncSequence);
+      if (staleSync && header.type == network::PacketType::GameStateSync) return;
 
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
@@ -347,13 +352,18 @@ namespace rtype::client {
             }
             _snapshot.push_back(state);
           }
-          for (const auto& state : _snapshot) updateEntityState(state);
-          _lastSyncSeq = header.sequence;
-          _hasSyncSequence = true;
-          if (header.type != network::PacketType::GameStateSync) {
+          const bool hasTick = header.type != network::PacketType::GameStateSync;
+          for (const auto& state : _snapshot) {
+            if (hasTick) recordSnapshotSample(state, tick);
+            if (!staleSync) updateEntityState(state);
+          }
+          if (hasTick && (!_hasSnapshotTick || tick > _lastSnapshotTick)) {
             _lastSnapshotTick = tick;
             _hasSnapshotTick = true;
           }
+          if (staleSync) break;
+          _lastSyncSeq = header.sequence;
+          _hasSyncSequence = true;
           break;
         }
         default: break;
@@ -435,6 +445,7 @@ namespace rtype::client {
         entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
+      _registry.addComponent(entity, engine::SnapshotBufferComponent{{}, _snapshotBufferSize});
       _networkToEcs[netId] = RemoteEntity{entity, type};
       if (_onSpawn) _onSpawn(entity, netId, type, isLocal);
 
@@ -514,6 +525,14 @@ namespace rtype::client {
         _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
     }
 
+    void recordSnapshotSample(const network::EntityStateData& state, std::uint32_t tick) {
+      auto it = _networkToEcs.find(state.netId);
+      if (it == _networkToEcs.end()) return;
+      auto* buffer = _registry.getComponent<engine::SnapshotBufferComponent>(it->second.entity);
+      if (!buffer) return;
+      engine::pushSnapshotSample(*buffer, {tick, {state.posX, state.posY}, {state.velX, state.velY}});
+    }
+
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) return;
@@ -550,6 +569,7 @@ namespace rtype::client {
     bool _hasSyncSequence{false};
     std::uint32_t _lastSnapshotTick{0};
     bool _hasSnapshotTick{false};
+    std::size_t _snapshotBufferSize{32};
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

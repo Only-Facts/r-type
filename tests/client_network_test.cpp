@@ -1,3 +1,4 @@
+#include "engine/ecs/SnapshotBuffer.hpp"
 #include "network/ClientNetworkManager.hpp"
 #include <cassert>
 #include <cstdint>
@@ -125,6 +126,75 @@ static void testPackedDeltaSnapshotIsApplied() {
 }
 
 
+static std::vector<std::uint32_t> bufferedTicks(const engine::SnapshotBufferComponent& buffer) {
+  std::vector<std::uint32_t> ticks;
+  for (const auto& sample : buffer.samples) ticks.push_back(sample.tick);
+  return ticks;
+}
+
+static void testSnapshotBufferOrderingAndBounds() {
+  engine::SnapshotBufferComponent buffer{{}, 3};
+  assert(engine::pushSnapshotSample(buffer, {5, {5.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Inserted);
+  assert(engine::pushSnapshotSample(buffer, {3, {3.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Inserted);
+  assert(engine::pushSnapshotSample(buffer, {4, {4.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Inserted);
+  assert((bufferedTicks(buffer) == std::vector<std::uint32_t>{3, 4, 5}));
+
+  assert(engine::pushSnapshotSample(buffer, {4, {99.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Duplicate);
+  assert(buffer.samples[1].position.x == 4.0f);
+
+  assert(engine::pushSnapshotSample(buffer, {7, {7.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Inserted);
+  assert((bufferedTicks(buffer) == std::vector<std::uint32_t>{4, 5, 7}));
+
+  assert(engine::pushSnapshotSample(buffer, {6, {6.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::Inserted);
+  assert((bufferedTicks(buffer) == std::vector<std::uint32_t>{5, 6, 7}));
+
+  assert(engine::pushSnapshotSample(buffer, {2, {2.0f, 0.0f}, {}}) == engine::SnapshotInsertResult::TooOld);
+  assert((bufferedTicks(buffer) == std::vector<std::uint32_t>{5, 6, 7}));
+}
+
+static network::PacketData snapshotPayload(std::uint32_t tick, network::NetworkId id, float x, float y) {
+  network::PacketStreamWriter payload;
+  payload << tick << std::uint16_t{1} << network::packEntityState(network::EntityStateData{id, x, y, 0.0f, 0.0f});
+  return payload.getBuffer();
+}
+
+static void testLateSnapshotIsBufferedWithoutMovingTarget() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::Entity remoteEntity = 0;
+  manager.setOnEntitySpawned(
+    [&](engine::Entity entity, network::NetworkId, network::ext::EntityType, bool) { remoteEntity = entity; });
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  network::PacketStreamWriter connectPayload;
+  connectPayload << network::NetworkId{1000} << std::uint8_t{1} << std::uint64_t{42};
+  socket.enqueue(makePacket(network::PacketType::ConnectAck, 1, connectPayload.getBuffer()), server);
+  network::PacketStreamWriter spawnPayload;
+  spawnPayload << network::NetworkId{2000} << std::uint8_t{1} << 100.0f << 200.0f;
+  socket.enqueue(makePacket(network::PacketType::SpawnEntity, 2, spawnPayload.getBuffer()), server);
+  manager.update(0.0f);
+  assert(remoteEntity != 0);
+
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 6, snapshotPayload(12, 2000, 300.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 4, snapshotPayload(10, 2000, 200.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(11, 2000, 250.0f, 200.0f)), server);
+  manager.update(0.0f);
+
+  const auto* buffer = registry.getComponent<engine::SnapshotBufferComponent>(remoteEntity);
+  assert(buffer != nullptr);
+  assert((bufferedTicks(*buffer) == std::vector<std::uint32_t>{10, 11, 12}));
+  assert(buffer->samples.front().position.x == 200.0f);
+  assert(buffer->samples.back().position.x == 300.0f);
+
+  const auto* transform = registry.getComponent<engine::TransformComponent>(remoteEntity);
+  assert(transform != nullptr);
+  assert(transform->targetPosition.x == 300.0f);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{12});
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -212,6 +282,8 @@ static void testReliableStateUpdatesIgnoreReordering() {
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
+  testSnapshotBufferOrderingAndBounds();
+  testLateSnapshotIsBufferedWithoutMovingTarget();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }
