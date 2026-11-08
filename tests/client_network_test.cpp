@@ -1,5 +1,6 @@
 #include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/SnapshotBuffer.hpp"
+#include "engine/systems/SnapshotInterpolationSystem.hpp"
 #include "network/ClientNetworkManager.hpp"
 #include <cassert>
 #include <cmath>
@@ -239,6 +240,107 @@ static void testSnapshotClockFollowsServerWithDelay() {
   assert(clock.nextRenderTick() > 5000.0);
 }
 
+static void testRemoteEntityAppearsWhenRenderTimeReachesIt() {
+  engine::Registry registry;
+  engine::SnapshotClock clock(60.0, 0.1, 0.1);
+  engine::SnapshotInterpolationSystem system(clock);
+  const engine::Entity ship = registry.createEntity();
+  registry.addComponent(ship, engine::TransformComponent{});
+  registry.addComponent(ship, engine::SpriteComponent{});
+  registry.addComponent(ship, engine::SnapshotBufferComponent{{}, 8});
+  const engine::Entity tag = registry.createEntity();
+  registry.addComponent(tag, engine::TransformComponent{});
+  registry.addComponent(tag, engine::TextComponent{});
+  registry.addComponent(tag, engine::FollowComponent{ship, {}});
+
+  system.update(registry, 0.0f);
+  assert(!registry.getComponent<engine::SpriteComponent>(ship)->visible);
+  assert(!registry.getComponent<engine::TextComponent>(tag)->visible);
+
+  engine::pushSnapshotSample(*registry.getComponent<engine::SnapshotBufferComponent>(ship), {60, {300.0f, 100.0f}, {}});
+  clock.observe(60);
+  system.update(registry, 0.0f);
+  assert(!registry.getComponent<engine::SpriteComponent>(ship)->visible);
+
+  clock.advance(0.2f);
+  system.update(registry, 0.0f);
+  assert(registry.getComponent<engine::SpriteComponent>(ship)->visible);
+  assert(registry.getComponent<engine::TextComponent>(tag)->visible);
+  assert(near(registry.getComponent<engine::TransformComponent>(ship)->position.x, 300.0));
+}
+
+static void spawnRemoteEntity(ClientMockSocket& socket, client::ClientNetworkManager& manager) {
+  const network::Endpoint server{"127.0.0.1", 4242};
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  network::PacketStreamWriter connectPayload;
+  connectPayload << network::NetworkId{1000} << std::uint8_t{1} << std::uint64_t{42};
+  socket.enqueue(makePacket(network::PacketType::ConnectAck, 1, connectPayload.getBuffer()), server);
+  network::PacketStreamWriter spawnPayload;
+  spawnPayload << network::NetworkId{2000} << std::uint8_t{1} << 100.0f << 200.0f;
+  socket.enqueue(makePacket(network::PacketType::SpawnEntity, 2, spawnPayload.getBuffer()), server);
+  manager.update(0.0f);
+}
+
+static network::PacketData destroyPacket(std::uint32_t sequence, network::NetworkId id) {
+  network::PacketStreamWriter payload;
+  payload << id;
+  return makePacket(network::PacketType::DestroyEntity, sequence, payload.getBuffer());
+}
+
+static void testRemoteDestroyWaitsForRenderTime() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::SnapshotClock clock(60.0, 0.1, 0.1);
+  manager.setSnapshotClock(&clock);
+  engine::Entity remoteEntity = 0;
+  int destroyedCount = 0;
+  manager.setOnEntitySpawned(
+    [&](engine::Entity entity, network::NetworkId, network::ext::EntityType, bool) { remoteEntity = entity; });
+  manager.setOnEntityDestroyed(
+    [&](engine::Entity, network::NetworkId, network::ext::EntityType) { ++destroyedCount; });
+  spawnRemoteEntity(socket, manager);
+  assert(remoteEntity != 0);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 3, snapshotPayload(60, 2000, 150.0f, 200.0f)), server);
+  manager.update(0.0f);
+  clock.nextRenderTick();
+
+  socket.enqueue(destroyPacket(4, 2000), server);
+  manager.update(0.0f);
+  assert(destroyedCount == 0);
+  assert(registry.getComponent<engine::TransformComponent>(remoteEntity) != nullptr);
+
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncDelta, 5, snapshotPayload(61, 2000, 999.0f, 200.0f)), server);
+  manager.update(0.0f);
+  const auto* buffer = registry.getComponent<engine::SnapshotBufferComponent>(remoteEntity);
+  assert(buffer != nullptr && buffer->samples.back().tick == 60);
+
+  clock.advance(0.2f);
+  clock.nextRenderTick();
+  manager.update(0.0f);
+  assert(destroyedCount == 1);
+  assert(registry.getComponent<engine::TransformComponent>(remoteEntity) == nullptr);
+}
+
+static void testDestroyIsImmediateWithoutSnapshotClock() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::Entity remoteEntity = 0;
+  int destroyedCount = 0;
+  manager.setOnEntitySpawned(
+    [&](engine::Entity entity, network::NetworkId, network::ext::EntityType, bool) { remoteEntity = entity; });
+  manager.setOnEntityDestroyed(
+    [&](engine::Entity, network::NetworkId, network::ext::EntityType) { ++destroyedCount; });
+  spawnRemoteEntity(socket, manager);
+  socket.enqueue(destroyPacket(3, 2000), {"127.0.0.1", 4242});
+  manager.update(0.0f);
+  assert(destroyedCount == 1);
+  assert(registry.getComponent<engine::TransformComponent>(remoteEntity) == nullptr);
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -330,6 +432,9 @@ int main() {
   testLateSnapshotIsBufferedWithoutMovingTarget();
   testSnapshotSamplingInterpolatesAndExtrapolates();
   testSnapshotClockFollowsServerWithDelay();
+  testRemoteEntityAppearsWhenRenderTimeReachesIt();
+  testRemoteDestroyWaitsForRenderTime();
+  testDestroyIsImmediateWithoutSnapshotClock();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }

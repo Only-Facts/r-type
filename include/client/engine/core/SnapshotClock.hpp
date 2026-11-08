@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 namespace rtype::engine {
   class SnapshotClock {
@@ -41,6 +42,11 @@ namespace rtype::engine {
         _lastRenderTick = raw;
         _hasRenderTick = true;
       }
+      return _lastRenderTick;
+    }
+
+    [[nodiscard]] std::optional<double> currentRenderTick() const {
+      if (!_hasRenderTick) return std::nullopt;
       return _lastRenderTick;
     }
 

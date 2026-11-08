@@ -94,6 +94,7 @@ namespace rtype::client {
         }
       }
       processIncomingPackets();
+      flushPendingDestroys(dt);
     }
 
     void sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
@@ -161,6 +162,16 @@ namespace rtype::client {
       engine::Entity entity;
       network::ext::EntityType type;
     };
+
+    struct PendingDestroy {
+      engine::Entity entity;
+      network::NetworkId netId;
+      network::ext::EntityType type;
+      std::uint32_t tick;
+      float waited;
+    };
+
+    static constexpr float MAX_DEFERRED_DESTROY_SECONDS = 1.0f;
 
     struct PendingHealth {
       int health{0};
@@ -480,9 +491,12 @@ namespace rtype::client {
     void destroyEntity(network::NetworkId netId, std::uint32_t sequence) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
-        if (_onDestroy) _onDestroy(it->second.entity, netId, it->second.type);
-        _registry.destroyEntity(it->second.entity);
+        const RemoteEntity removed = it->second;
         _networkToEcs.erase(it);
+        if (shouldDeferDestroy(removed.entity))
+          _pendingDestroys.push_back({removed.entity, netId, removed.type, _lastSnapshotTick + 1, 0.0f});
+        else
+          finishDestroy(removed.entity, netId, removed.type);
       }
       _playerSkins.erase(netId);
       _pendingHealth.erase(netId);
@@ -527,6 +541,34 @@ namespace rtype::client {
       _registry.addComponent(entity, engine::HealthComponent{health, maxHealth});
       if (_onHealth)
         _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
+    }
+
+    bool shouldDeferDestroy(engine::Entity entity) const {
+      return _snapshotClock && _snapshotClock->isSynchronized() && _hasSnapshotTick &&
+             _registry.getComponent<engine::SnapshotBufferComponent>(entity) != nullptr;
+    }
+
+    void finishDestroy(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type) {
+      if (_onDestroy) _onDestroy(entity, netId, type);
+      _registry.destroyEntity(entity);
+    }
+
+    void flushPendingDestroys(float dt) {
+      if (_pendingDestroys.empty()) return;
+      const bool synchronized = _snapshotClock && _snapshotClock->isSynchronized();
+      const auto renderTick = _snapshotClock ? _snapshotClock->currentRenderTick() : std::nullopt;
+      std::vector<PendingDestroy> ready;
+      for (auto pending = _pendingDestroys.begin(); pending != _pendingDestroys.end();) {
+        pending->waited += std::max(dt, 0.0f);
+        const bool reached = renderTick && *renderTick >= static_cast<double>(pending->tick);
+        if (!synchronized || reached || pending->waited >= MAX_DEFERRED_DESTROY_SECONDS) {
+          ready.push_back(*pending);
+          pending = _pendingDestroys.erase(pending);
+        } else {
+          ++pending;
+        }
+      }
+      for (const auto& entry : ready) finishDestroy(entry.entity, entry.netId, entry.type);
     }
 
     void recordSnapshotSample(const network::EntityStateData& state, std::uint32_t tick) {
@@ -575,6 +617,7 @@ namespace rtype::client {
     bool _hasSnapshotTick{false};
     std::size_t _snapshotBufferSize{32};
     engine::SnapshotClock* _snapshotClock{nullptr};
+    std::vector<PendingDestroy> _pendingDestroys;
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

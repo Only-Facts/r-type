@@ -100,6 +100,7 @@ namespace rtype::engine {
   struct SnapshotBufferComponent {
     std::vector<SnapshotSample> samples;
     std::size_t capacity{32};
+    bool revealed{false};
   };
 
   struct NetworkIdComponent {
