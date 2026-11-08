@@ -59,14 +59,13 @@ namespace rtype::server {
     void startNetworkThread() {
       if (_receiver.joinable()) return;
       _socket.setNonBlocking(true);
-      _receiver = std::jthread([this](std::stop_token stop) {
-        receiveLoop(stop);
-      });
+      _stopReceiver.store(false);
+      _receiver = std::thread([this] { receiveLoop(); });
     }
 
     void stopNetworkThread() {
       if (!_receiver.joinable()) return;
-      _receiver.request_stop();
+      _stopReceiver.store(true);
       _receiver.join();
     }
 
@@ -186,8 +185,8 @@ namespace rtype::server {
       }
     }
 
-    void receiveLoop(std::stop_token stop) {
-      while (!stop.stop_requested()) {
+    void receiveLoop() {
+      while (!_stopReceiver.load()) {
         network::PacketData data;
         network::Endpoint sender;
         try {
@@ -645,7 +644,8 @@ namespace rtype::server {
     std::uint32_t _nextRoomId{2};
     std::unordered_map<std::string, std::uint32_t> _pendingCreates;
     std::unordered_map<std::string, RecentLeave> _recentLeaves;
-    std::jthread _receiver;
+    std::atomic<bool> _stopReceiver{false};
+    std::thread _receiver;
     std::mutex _queueMutex;
     std::deque<ReceivedDatagram> _pendingPackets;
     std::size_t _pendingBytes{0};
