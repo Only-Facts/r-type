@@ -166,6 +166,9 @@ namespace rtype::client {
     [[nodiscard]] std::size_t getLateSnapshotCount() const { return _lateSnapshots; }
     [[nodiscard]] std::size_t getUnknownBaseDeltaCount() const { return _unknownBaseDeltas; }
     [[nodiscard]] std::size_t getFullSnapshotRequestCount() const { return _fullSnapshotRequests; }
+    [[nodiscard]] std::size_t getFullSnapshotCount() const { return _fullSnapshotsReceived; }
+    [[nodiscard]] std::size_t getDeltaSnapshotCount() const { return _deltaSnapshotsReceived; }
+    [[nodiscard]] std::size_t getSnapshotBytesReceived() const { return _snapshotBytesReceived; }
 
     [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
       if (!_hasSnapshotTick) return std::nullopt;
@@ -398,11 +401,15 @@ namespace rtype::client {
             state[packed.netId] = packed;
           }
           _awaitingFullSnapshot = false;
+          ++_fullSnapshotsReceived;
+          _snapshotBytesReceived += data.size();
           acceptSnapshot(tick, std::move(state));
           break;
         }
         case network::PacketType::GameStateSyncDelta:
           handleSnapshotDelta(network::readSnapshotDelta(reader, MAX_SNAPSHOT_COUNT));
+          ++_deltaSnapshotsReceived;
+          _snapshotBytesReceived += data.size();
           break;
         default: break;
       }
@@ -762,6 +769,9 @@ namespace rtype::client {
     std::size_t _lateSnapshots{0};
     std::size_t _unknownBaseDeltas{0};
     std::size_t _fullSnapshotRequests{0};
+    std::size_t _fullSnapshotsReceived{0};
+    std::size_t _deltaSnapshotsReceived{0};
+    std::size_t _snapshotBytesReceived{0};
     float _fullRequestCooldown{0.0f};
     bool _awaitingFullSnapshot{false};
     std::vector<PendingDelta> _pendingDeltas;

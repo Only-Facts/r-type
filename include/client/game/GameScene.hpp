@@ -50,7 +50,7 @@ namespace rtype::game {
     void updateConnectionStatus(float dt);
     void sendInputs();
     void applyLocalPrediction(float dt);
-    void updateNetworkDebugLine();
+    void updateNetworkDebugLine(float dt);
     void sendFixedStepInputs(float dt);
 
     int playerNumber(network::NetworkId netId) const;
@@ -107,6 +107,9 @@ namespace rtype::game {
     std::size_t _snapshotBufferSize;
     float _inputStep{1.0f / 60.0f};
     float _inputAccumulator{0.0f};
+    float _snapshotRateElapsed{0.0f};
+    std::size_t _snapshotBytesAtSample{0};
+    double _snapshotKiBPerSecond{0.0};
     std::string _networkDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;

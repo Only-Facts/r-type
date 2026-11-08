@@ -11,6 +11,7 @@ same game over UDP.
 - Authoritative UDP server: the server owns the game state, clients only send inputs and display what they receive
 - Up to 4 players in the same game, with remote entities interpolated from a buffer of timed snapshots
 - Local prediction with server reconciliation: your ship answers the keys immediately, the server keeps the final word
+- Differential snapshots: only the fields that changed since a known base are sent, with automatic full state recovery (41 % less bandwidth than full states on a 4-player scene)
 - Title screen with difficulty selection (Easy, Normal, Hard)
 - Ship selection screen with 5 ships, the chosen ship is shown to every player
 - Enemies (Bydos) that fly across the screen and shoot forward, aiming at players ahead of them in Hard mode
@@ -183,15 +184,19 @@ sequence number (u32) and payload size (u16).
 | Type | Packet | Direction | Payload |
 |------|--------|-----------|---------|
 | `0x01` | ConnectReq | client to server | difficulty, ship |
-| `0x02` | ConnectAck | server to client | player id, difficulty |
-| `0x03` | Disconnect | client to server | player id |
+| `0x02` | ConnectAck | server to client | player id, difficulty, session token |
+| `0x03` | Disconnect | client to server | player id, session token |
 | `0x10` | SpawnPlayer | server to client | player id, position, ship |
 | `0x11` | DestroyEntity | server to client | entity id |
 | `0x12` | SpawnEntity | server to client | entity id, type, position |
 | `0x13` | HealthUpdate | server to client | entity id, health, max health |
 | `0x14` | AugmentUpdate | server to client | player id, bonus, level, remaining time |
-| `0x20` | PlayerInput | client to server | player id, up, down, left, right, shoot |
-| `0x30` | GameStateSync | server to client | position and velocity of every entity |
+| `0x15` | ScoreUpdate | server to client | player id, score |
+| `0x20` | PlayerInput | client to server | player id, session token, up, down, left, right, shoot; the packet sequence is the input number |
+| `0x31` | GameStateSyncPacked | server to client | full state: tick, position and velocity of every entity |
+| `0x32` | GameStateSyncDelta | server to client | tick, base tick, changed fields of changed entities, removed entities |
+| `0x33` | InputAck | server to client | last input applied, tick, confirmed position |
+| `0x34` | SnapshotRequest | client to server | player id, session token: asks for a full state |
 
 The exact byte layout of each packet is described in [docs/protocol-extension.md](docs/protocol-extension.md).
 

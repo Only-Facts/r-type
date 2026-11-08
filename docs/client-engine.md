@@ -171,13 +171,15 @@ A scene can add its own lines through `_context.debug.lines["name"]`. The game s
 a network line (`[network] debug_text`):
 
 ```
-NET  tick 675  delay 100 ms  buffer 31/32  late 198  remote 21  pending 9  correction 0 px
+NET  tick 977  delay 100 ms  buffer 31/32  late 2  remote 27  pending 5  correction 0 px  snapshots 9.8 KiB/s (17 full, 883 delta, 0 req)
 ```
 
 `tick` is the newest server tick received, `buffer` the average number of snapshots kept
 per remote entity, `late` the number of snapshots that arrived after a newer one and were
 still used, `remote` the number of interpolated entities, `pending` the local inputs not
-confirmed by the server yet, `correction` the size of the last prediction correction.
+confirmed by the server yet, `correction` the size of the last prediction correction,
+`snapshots` the snapshot bandwidth received with the number of full states, deltas and
+full state requests.
 
 ### Remote entity interpolation
 

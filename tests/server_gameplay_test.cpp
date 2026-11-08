@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -81,6 +82,10 @@ struct GameRoomTestAccess {
   }
 
   static void removeEntity(GameRoom& room, network::NetworkId id) { room._entities.erase(id); }
+
+  static std::size_t snapshotEntityTotal(const GameRoom& room) {
+    return room._clients.size() + room._entities.size();
+  }
 
   static bool hasEntity(const GameRoom& room, network::NetworkId id) {
     return room._entities.find(id) != room._entities.end();
@@ -656,6 +661,74 @@ static void testFullSnapshotIsSentOnlyToTheRequester() {
   assert(lastTypeFor(socket, second.endpoint.port) == network::PacketType::GameStateSyncDelta);
 }
 
+static void testSnapshotBandwidthOnRepresentativeScene() {
+  GameplayMockSocket socket;
+  std::uint32_t sequence = 1;
+  server::GameRoom room(socket, 1, 4, 1, false, sequence);
+  std::vector<server::ConnectedClient*> players;
+  for (network::NetworkId id = 1000; id < 1004; ++id) {
+    auto& player = server::GameRoomTestAccess::addClient(room, id);
+    player.posX = 200.0f;
+    player.posY = 200.0f + 150.0f * static_cast<float>(id - 1000);
+    player.hp = 1000;
+    player.maxHp = 1000;
+    players.push_back(&player);
+  }
+
+  constexpr int TICKS = 900;
+  constexpr std::size_t HEADER = sizeof(network::PacketHeader);
+  constexpr std::size_t RECORD = sizeof(network::PackedEntityStateData);
+  std::uint64_t fullEveryTick = 0;
+  std::uint64_t previousDelta = 0;
+  std::uint64_t fieldDelta = 0;
+  std::size_t inspected = 0;
+
+  for (int tick = 0; tick < TICKS; ++tick) {
+    const bool phase = (tick / 45) % 2 == 0;
+    const std::uint8_t inputs[4][5] = {
+      {static_cast<std::uint8_t>(phase), static_cast<std::uint8_t>(!phase), 0, 0, 1},
+      {0, 0, static_cast<std::uint8_t>(!phase), static_cast<std::uint8_t>(phase), 1},
+      {0, 0, 0, 0, 1},
+      {0, 0, 0, 0, 0},
+    };
+    for (std::size_t i = 0; i < players.size(); ++i) {
+      const auto* input = inputs[i];
+      room.handlePacket(playerInputPacket(static_cast<std::uint32_t>(tick + 1), players[i]->id,
+                                          players[i]->sessionToken, input[0], input[1], input[2], input[3], input[4]),
+                        players[i]->endpoint);
+    }
+    server::GameRoomTestAccess::update(room, 1.0f / 60.0f);
+    const std::size_t entities = server::GameRoomTestAccess::snapshotEntityTotal(room);
+    fullEveryTick += (HEADER + 4 + 2 + entities * RECORD) * players.size();
+    server::GameRoomTestAccess::broadcastSnapshot(room);
+
+    for (; inspected < socket.sent.size(); ++inspected) {
+      const auto& sent = socket.sent[inspected];
+      network::PacketStreamReader reader(sent.data);
+      network::PacketHeader header{};
+      reader >> header;
+      if (header.type == network::PacketType::GameStateSyncPacked) {
+        fieldDelta += sent.data.size();
+        previousDelta += sent.data.size();
+      } else if (header.type == network::PacketType::GameStateSyncDelta) {
+        const auto delta = network::readSnapshotDelta(reader, 256);
+        fieldDelta += sent.data.size();
+        previousDelta += HEADER + 4 + 2 + delta.changed.size() * RECORD;
+      }
+    }
+  }
+
+  const double seconds = TICKS / 60.0;
+  const auto kib = [seconds](std::uint64_t bytes) { return static_cast<double>(bytes) / seconds / 1024.0; };
+  std::printf("snapshot bandwidth, 4 players, %.0f s: full every tick %.1f KiB/s, "
+              "changed entities %.1f KiB/s, changed fields %.1f KiB/s (%.0f%% saved vs full)\n",
+              seconds, kib(fullEveryTick), kib(previousDelta), kib(fieldDelta),
+              100.0 * (1.0 - static_cast<double>(fieldDelta) / static_cast<double>(fullEveryTick)));
+  std::fflush(stdout);
+  assert(fieldDelta < previousDelta);
+  assert(fieldDelta * 4 < fullEveryTick * 3);
+}
+
 static void testSnapshotDeltaAndKeyframeCadence() {
   GameplayMockSocket socket;
   std::uint32_t sequence = 1;
@@ -756,6 +829,7 @@ int main() {
   testSnapshotDeltaAndKeyframeCadence();
   testSnapshotDeltaNamesItsBaseAndLifecycle();
   testFullSnapshotIsSentOnlyToTheRequester();
+  testSnapshotBandwidthOnRepresentativeScene();
   testDisconnectRemovesOwnedProjectiles();
   testFixedTickReportsDroppedSimulationTime();
   return 0;

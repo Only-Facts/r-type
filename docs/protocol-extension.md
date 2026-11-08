@@ -293,28 +293,78 @@ existing score HUD.
   rely on IP fragmentation.
 
 
-## 11. Snapshot keyframes and deltas
+## 11. Full and differential snapshots
 
-The server sends packed entity states using 12-byte records (`netId`, quantized
-position, and quantized velocity). `GameStateSyncPacked` (`0x31`) is a full
-keyframe. `GameStateSyncDelta` (`0x32`) contains only entities whose packed
-state changed since the previous snapshot. Deltas are intentionally unreliable;
-a full keyframe is sent at least every 60 server snapshot updates so packet loss
-cannot leave a client permanently out of sync. Entity creation and destruction
-remain separate reliable events.
+Entity states are quantized (`packEntityState`): position in 1/8 px and velocity in
+1/4 px/s, stored as `i16`. Every snapshot carries the server `tick`, the number of
+fixed simulation steps (60 per second) run by the room since it started, so two
+snapshots are always ordered and `(tickB - tickA) / 60` seconds apart.
 
-Both packet types start with the server snapshot `tick` (`u32`), then a `u16`
-state count followed by that many packed records:
+**`GameStateSyncPacked` (`0x31`), full state**: every entity of the room.
 
 ```
 tick u32 | count u16 | count x (netId u32, posX i16, posY i16, velX i16, velY i16)
 ```
 
-The tick is the number of fixed simulation steps (60 per second) run by the
-room since it started, so two snapshots are always ordered by their tick and
-their time distance is `(tickB - tickA) / 60` seconds. Clients use it to order snapshots and to
-interpolate remote entities. A delta is applied as a set of updates, not as a
-replacement for the client's complete entity list.
+**`GameStateSyncDelta` (`0x32`), differential state**: what changed since the
+snapshot `baseTick`, field by field.
+
+```
+tick u32 | baseTick u32
+changedCount u16 | changedCount x (netId u32, mask u8, [posX i16] [posY i16] [velX i16] [velY i16])
+removedCount u16 | removedCount x netId u32
+```
+
+`mask` tells which fields follow: `0x01` posX, `0x02` posY, `0x04` velX, `0x08`
+velY. An entity that is not in the base is sent with all four fields (`0x0F`), an
+entity no longer in the room is listed in `removed`, and an entity that is not
+listed did not change. Encoding, decoding and application are shared by the server
+and the client (`include/common/network/SnapshotDelta.hpp`); a zero mask, unknown
+bits, a partial record for an unknown entity or trailing bytes make the packet
+invalid.
+
+Rules:
+
+- The base of a delta is always the last snapshot the server sent to every client
+  of the room. When nothing changed, nothing is sent and the base stays the same.
+- A delta can only be applied on top of its base. The client keeps the last 64
+  reconstructed states by tick. A delta whose base is unknown waits up to 100 ms
+  (it may have overtaken its base on the network); when the base arrives it is
+  applied, otherwise the client asks for a full state.
+- Unchanged entities are still part of the reconstructed state, so every remote
+  entity gets one interpolation sample per snapshot.
+- Creation and destruction of entities keep their reliable `SpawnEntity` /
+  `DestroyEntity` events (type, sound, explosion). The snapshot only carries
+  positions: a record for an entity not spawned yet is kept in the state and used
+  once the spawn arrives.
+- A full state is sent to a client when it joins, when it asks for one, and to
+  everybody every 60 snapshots as a safety net. When only one client needs a full
+  state, the others still receive a delta (possibly empty) for the same tick, so
+  every client keeps the same base.
+
+**`SnapshotRequest` (`0x34`, client -> server)**: `netId u32 | sessionToken u64`,
+unreliable. The server checks the endpoint and the session token, then sends the
+next snapshot to that client as a full state. The client sends it again every
+250 ms until a full state arrives.
+
+### Measured bandwidth
+
+`server_gameplay_test` (`testSnapshotBandwidthOnRepresentativeScene`) plays 15
+seconds with 4 players (two moving and shooting, one shooting in place, one idle)
+with the normal enemy waves, missiles and bonuses, and counts the snapshot bytes
+sent to the 4 clients:
+
+| Snapshots | Bandwidth |
+|---|---|
+| Full state every tick | about 100 to 110 KiB/s |
+| Previous delta (whole 12-byte record of every changed entity) | about 95 to 104 KiB/s |
+| Field delta with base, removals and periodic full state | about 56 to 65 KiB/s, 41 % less than full |
+
+Most entities move every tick, so the gain comes from the fields: an enemy flying
+horizontally only sends `posX` (7 bytes instead of 12), and a constant velocity is
+never repeated. The server log shows the live split every 10 s
+(`snapshots(full=... KiB/s, delta=... KiB/s, requests=...)`), and the client debug
+overlay (F3) shows the snapshot bandwidth it receives.
 
 ## 12. Reliable event delivery
 

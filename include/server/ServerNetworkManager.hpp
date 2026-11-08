@@ -102,6 +102,11 @@ namespace rtype::server {
       result.rateLimitedPackets = _metrics.rateLimitedPackets.load();
       result.receiveQueueDrops = _metrics.receiveQueueDrops.load();
       result.reliableQueueDrops = _metrics.reliableQueueDrops.load();
+      result.fullSnapshotsSent = _metrics.fullSnapshotsSent.load();
+      result.fullSnapshotBytes = _metrics.fullSnapshotBytes.load();
+      result.deltaSnapshotsSent = _metrics.deltaSnapshotsSent.load();
+      result.deltaSnapshotBytes = _metrics.deltaSnapshotBytes.load();
+      result.fullSnapshotRequests = _metrics.fullSnapshotRequests.load();
       result.reliablePending = _reliable.pendingCount();
       result.reliableAcknowledged = _reliable.acknowledgedCount();
       result.reliableRetransmitted = _reliable.retransmittedCount();

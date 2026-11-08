@@ -211,10 +211,17 @@ namespace rtype::game {
     applyLocalPrediction(dt);
     _hud.update(dt);
     updateConnectionStatus(dt);
-    updateNetworkDebugLine();
+    updateNetworkDebugLine(dt);
   }
 
-  void GameScene::updateNetworkDebugLine() {
+  void GameScene::updateNetworkDebugLine(float dt) {
+    _snapshotRateElapsed += std::max(dt, 0.0f);
+    if (_snapshotRateElapsed >= 1.0f) {
+      const std::size_t bytes = _network.getSnapshotBytesReceived();
+      _snapshotKiBPerSecond = static_cast<double>(bytes - _snapshotBytesAtSample) / _snapshotRateElapsed / 1024.0;
+      _snapshotBytesAtSample = bytes;
+      _snapshotRateElapsed = 0.0f;
+    }
     if (!_context.debug.overlayVisible || _networkDebugText.empty()) return;
     std::size_t remote = 0;
     std::size_t buffered = 0;
@@ -232,6 +239,11 @@ namespace rtype::game {
       {"remote", std::to_string(remote)},
       {"pending", std::to_string(_prediction.pendingCount())},
       {"correction", std::to_string(std::lround(_prediction.lastCorrection()))},
+      {"snapshots", std::to_string(std::lround(_snapshotKiBPerSecond * 10.0) / 10) + "." +
+                    std::to_string(std::lround(_snapshotKiBPerSecond * 10.0) % 10)},
+      {"full", std::to_string(_network.getFullSnapshotCount())},
+      {"delta", std::to_string(_network.getDeltaSnapshotCount())},
+      {"requests", std::to_string(_network.getFullSnapshotRequestCount())},
     });
   }
 

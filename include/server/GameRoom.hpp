@@ -539,6 +539,7 @@ namespace rtype::server {
         return;
       }
       it->second.needsFullSnapshot = true;
+      if (_metrics) _metrics->fullSnapshotRequests.fetch_add(1, std::memory_order_relaxed);
     }
 
     void removeClient(network::NetworkId netId) {
@@ -1212,7 +1213,9 @@ namespace rtype::server {
         fullPacket = snapshotPacket(network::PacketType::GameStateSyncPacked, fullSnapshotPayload(current));
       for (auto& [id, client] : _clients) {
         const bool full = keyframe || client.needsFullSnapshot;
-        sendDatagram(full ? fullPacket : deltaPacket, client.endpoint, false);
+        const network::PacketData& packet = full ? fullPacket : deltaPacket;
+        sendDatagram(packet, client.endpoint, false);
+        if (_metrics) _metrics->recordSnapshot(full, packet.size());
         client.needsFullSnapshot = false;
       }
 
