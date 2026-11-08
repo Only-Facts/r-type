@@ -50,6 +50,7 @@ namespace rtype::game {
     void sendInputs();
     void keepLocalShipOnScreen();
     void updateNetworkDebugLine();
+    void sendFixedStepInputs(float dt);
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -104,6 +105,8 @@ namespace rtype::game {
     int _playerZ;
     float _interpolationSpeed;
     std::size_t _snapshotBufferSize;
+    float _inputStep{1.0f / 60.0f};
+    float _inputAccumulator{0.0f};
     std::string _networkDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;

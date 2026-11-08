@@ -40,6 +40,7 @@ namespace rtype::game {
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
     constexpr const char* DEBUG_LINE_NETWORK = "network";
+    constexpr int MAX_INPUT_STEPS_PER_FRAME = 4;
     constexpr const char* SESSION_NET_ID = "player_net_id";
 
     unsigned short readPort(const engine::Config& config) {
@@ -80,6 +81,7 @@ namespace rtype::game {
     if (delayMs < 0.0f || extrapolationMs < 0.0f)
       throw RtypeError("[network] interpolation_delay_ms and max_extrapolation_ms must be >= 0");
     _snapshotClock.configure(tickRate, delayMs / 1000.0f, extrapolationMs / 1000.0f);
+    _inputStep = 1.0f / tickRate;
     _network.setSnapshotBufferSize(_snapshotBufferSize);
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
     _augments.load(context.config, SECTION_AUGMENTS);
@@ -195,7 +197,7 @@ namespace rtype::game {
       _context.scenes.changeScene(_menuScene);
       return;
     }
-    sendInputs();
+    sendFixedStepInputs(dt);
     _snapshotClock.advance(dt);
     _network.update(dt);
     keepLocalShipOnScreen();
@@ -221,6 +223,15 @@ namespace rtype::game {
       {"late", std::to_string(_network.getLateSnapshotCount())},
       {"remote", std::to_string(remote)},
     });
+  }
+
+  void GameScene::sendFixedStepInputs(float dt) {
+    const float backlog = _inputStep * static_cast<float>(MAX_INPUT_STEPS_PER_FRAME);
+    _inputAccumulator = std::min(_inputAccumulator + std::max(dt, 0.0f), backlog);
+    while (_inputAccumulator >= _inputStep) {
+      _inputAccumulator -= _inputStep;
+      sendInputs();
+    }
   }
 
   void GameScene::sendInputs() {

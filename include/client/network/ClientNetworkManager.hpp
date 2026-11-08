@@ -35,6 +35,14 @@ namespace rtype::client {
                                                network::ext::AugmentId, int, float)>;
     using ScoreCallback = std::function<void(network::NetworkId, std::uint32_t)>;
 
+    struct InputAck {
+      std::uint32_t lastInput{0};
+      std::uint32_t tick{0};
+      float x{0.0f};
+      float y{0.0f};
+    };
+    using InputAckCallback = std::function<void(const InputAck&)>;
+
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
 
@@ -45,6 +53,7 @@ namespace rtype::client {
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
     void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
     void setOnScoreChanged(ScoreCallback callback) { _onScore = std::move(callback); }
+    void setOnInputAck(InputAckCallback callback) { _onInputAck = std::move(callback); }
 
     static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
 
@@ -81,6 +90,7 @@ namespace rtype::client {
       _lastScoreSequences.clear();
       _hasSyncSequence = false;
       _hasSnapshotTick = false;
+      _hasInputAck = false;
     }
 
     void update(float dt) {
@@ -97,11 +107,12 @@ namespace rtype::client {
       flushPendingDestroys(dt);
     }
 
-    void sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
-      if (!_isConnected) return;
+    std::optional<std::uint32_t> sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
+      if (!_isConnected) return std::nullopt;
 
+      const std::uint32_t inputSequence = _outgoingSeq++;
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, _outgoingSeq++, 0
+        network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, inputSequence, 0
       };
 
       network::PacketStreamWriter payload;
@@ -121,6 +132,7 @@ namespace rtype::client {
       packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
 
       _socket.send(packet, _serverEndpoint);
+      return inputSequence;
     }
 
     void disconnect() {
@@ -281,6 +293,15 @@ namespace rtype::client {
               augment, level, remaining, header.sequence};
           }
         }
+        return;
+      }
+      if (header.type == network::PacketType::InputAck) {
+        InputAck ack;
+        reader >> ack.lastInput >> ack.tick >> ack.x >> ack.y;
+        if (!_isConnected || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return;
+        _lastInputAck = ack.lastInput;
+        _hasInputAck = true;
+        if (_onInputAck) _onInputAck(ack);
         return;
       }
       if (header.type == network::ext::SCORE_UPDATE) {
@@ -597,6 +618,9 @@ namespace rtype::client {
     HealthCallback _onHealth;
     AugmentCallback _onAugment;
     ScoreCallback _onScore;
+    InputAckCallback _onInputAck;
+    std::uint32_t _lastInputAck{0};
+    bool _hasInputAck{false};
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
     std::unordered_map<network::NetworkId, PendingHealth> _pendingHealth;

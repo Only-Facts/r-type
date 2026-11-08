@@ -341,6 +341,34 @@ static void testDestroyIsImmediateWithoutSnapshotClock() {
   assert(registry.getComponent<engine::TransformComponent>(remoteEntity) == nullptr);
 }
 
+static network::PacketData inputAckPacket(std::uint32_t sequence, std::uint32_t lastInput, float x, float y) {
+  network::PacketStreamWriter payload;
+  payload << lastInput << std::uint32_t{0} << x << y;
+  return makePacket(network::PacketType::InputAck, sequence, payload.getBuffer());
+}
+
+static void testInputNumbersAndAcknowledgements() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  std::vector<client::ClientNetworkManager::InputAck> acks;
+  manager.setOnInputAck([&](const client::ClientNetworkManager::InputAck& ack) { acks.push_back(ack); });
+  assert(!manager.sendInputs(false, false, false, true, false));
+
+  spawnRemoteEntity(socket, manager);
+  const auto first = manager.sendInputs(false, false, false, true, false);
+  const auto second = manager.sendInputs(false, false, false, true, false);
+  assert(first && second && *second > *first);
+
+  const network::Endpoint server{"127.0.0.1", 4242};
+  socket.enqueue(inputAckPacket(10, *second, 110.0f, 200.0f), server);
+  socket.enqueue(inputAckPacket(11, *first, 105.0f, 200.0f), server);
+  manager.update(0.0f);
+  assert(acks.size() == 1);
+  assert(acks.front().lastInput == *second);
+  assert(acks.front().x == 110.0f && acks.front().y == 200.0f);
+}
+
 static void testReliableStateUpdatesIgnoreReordering() {
   ClientMockSocket socket;
   engine::Registry registry;
@@ -435,6 +463,7 @@ int main() {
   testRemoteEntityAppearsWhenRenderTimeReachesIt();
   testRemoteDestroyWaitsForRenderTime();
   testDestroyIsImmediateWithoutSnapshotClock();
+  testInputNumbersAndAcknowledgements();
   testReliableStateUpdatesIgnoreReordering();
   return 0;
 }
