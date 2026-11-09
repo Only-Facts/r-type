@@ -26,6 +26,7 @@ namespace rtype::client {
     double bytesSentPerSecond{0.0};
     double bytesReceivedPerSecond{0.0};
 
+    std::optional<double> lastRttMs;
     std::optional<double> rttMs;
     std::optional<double> jitterMs;
     std::uint64_t pingsSent{0};

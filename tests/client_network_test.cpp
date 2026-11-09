@@ -751,7 +751,7 @@ static void testLobbyOpensTheSocketWithoutConnecting() {
   assert(socket.binds == 1);
   assert(socket.sent.empty());
   manager.update(0.5f);
-  assert(socket.sent.empty());
+  assert(socket.sent.size() == countSent(socket, network::PacketType::Ping));
 
   manager.connectToServer("127.0.0.1", 4242, 1, 0);
   assert(manager.getState() == SessionState::Connecting);
@@ -1137,7 +1137,8 @@ static void testNetStatsCountPacketsAndBytes() {
   manager.update(0.0f);
   assert(stats.packetsReceived == 3);
   assert(stats.bytesReceived == sizeof(network::PacketHeader) + 13 + sizeof(network::PacketHeader) + 13 + 3);
-  assert(stats.packetsSent == 4);
+  assert(stats.packetsSent == 5);
+  assert(countSent(socket, network::PacketType::Ping) == 1);
 
   assert(stats.packetsSent == socket.sent.size());
 }
@@ -1212,29 +1213,94 @@ static void testNetStatsMeasureThroughputInBytesPerSecond() {
   const network::Endpoint server{"127.0.0.1", 4242};
   const client::NetStats& stats = manager.getStats();
   const double header = sizeof(network::PacketHeader);
+  const double connect = header + 2;
+  const double ack = header + 4;
+  const double input = header + 17;
+  const double ping = header + 8;
 
   manager.connectToServer("127.0.0.1", 4242, 1, 0);
   socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
   manager.update(0.5f);
   assert(stats.bytesSentPerSecond == 0.0 && stats.bytesReceivedPerSecond == 0.0);
   manager.update(0.5f);
-  assert(stats.bytesSentPerSecond == 2.0 * (header + 2) + (header + 4));
+  assert(stats.bytesSentPerSecond == 2.0 * connect + ack + ping);
   assert(stats.bytesReceivedPerSecond == header + 13);
 
   for (int i = 0; i < 10; ++i) manager.sendInputs(false, false, false, true, false);
   manager.update(0.5f);
-  assert(stats.bytesSentPerSecond == 2.0 * (header + 2) + (header + 4));
+  assert(stats.bytesSentPerSecond == 2.0 * connect + ack + ping);
   manager.update(0.5f);
-  assert(stats.bytesSentPerSecond == 10.0 * (header + 17));
+  assert(stats.bytesSentPerSecond == 10.0 * input + 2.0 * ping);
   assert(stats.bytesReceivedPerSecond == 0.0);
 
   for (int i = 0; i < 6; ++i) manager.sendInputs(false, false, false, true, false);
   manager.update(2.0f);
-  assert(stats.bytesSentPerSecond == 6.0 * (header + 17) / 2.0);
+  assert(stats.bytesSentPerSecond == (6.0 * input + ping) / 2.0);
 
   manager.update(0.0f);
   manager.update(-1.0f);
-  assert(stats.bytesSentPerSecond == 6.0 * (header + 17) / 2.0);
+  assert(stats.bytesSentPerSecond == (6.0 * input + ping) / 2.0);
+}
+
+static std::uint64_t pingTimestamp(const network::PacketData& packet) {
+  network::PacketStreamReader reader(packet);
+  network::PacketHeader header{};
+  std::uint64_t timestamp{0};
+  reader >> header >> timestamp;
+  return timestamp;
+}
+
+static network::PacketData pongPacket(std::uint32_t sequence, std::uint64_t timestamp) {
+  network::PacketStreamWriter payload;
+  payload << timestamp;
+  return makePacket(network::PacketType::Pong, sequence, payload.getBuffer());
+}
+
+static void testPingsMeasureRoundTripTime() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.update(1.0f);
+  assert(stats.pingsSent == 0);
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 1);
+  const auto ping = lastSent(socket, network::PacketType::Ping);
+  assert(ping.size() == sizeof(network::PacketHeader) + 8);
+  const std::uint64_t timestamp = pingTimestamp(ping);
+  assert(timestamp == 1250000);
+  assert(!stats.lastRttMs);
+
+  socket.enqueue(pongPacket(1, timestamp), server);
+  manager.update(0.04f);
+  assert(stats.pongsReceived == 1);
+  assert(stats.lastRttMs && std::abs(*stats.lastRttMs - 40.0) < 0.01);
+
+  socket.enqueue(pongPacket(2, timestamp), server);
+  socket.enqueue(pongPacket(3, 42), server);
+  network::PacketStreamWriter shortPong;
+  shortPong << std::uint32_t{7};
+  socket.enqueue(makePacket(network::PacketType::Pong, 4, shortPong.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.pongsReceived == 1);
+  assert(stats.rejectedFor(RejectReason::Stale) == 2);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 1);
+
+  manager.update(0.46f);
+  assert(stats.pingsSent == 2);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 2);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 3);
+
+  manager.disconnect();
+  manager.update(1.0f);
+  assert(stats.pingsSent == 3);
 }
 
 int main() {
@@ -1269,5 +1335,6 @@ int main() {
   testNetStatsCountPacketsAndBytes();
   testNetStatsCountRejectedPacketsByReason();
   testNetStatsMeasureThroughputInBytesPerSecond();
+  testPingsMeasureRoundTripTime();
   return 0;
 }

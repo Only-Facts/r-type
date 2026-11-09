@@ -217,6 +217,8 @@ namespace rtype::client {
           }
         }
       }
+      advanceClock(dt);
+      updatePings(dt);
       if (retryLobbyRequest(_roomListRequest, dt) && _onRoomList) _onRoomList(RoomResult::TimedOut, {});
       if (retryLobbyRequest(_roomCreateRequest, dt) && _onRoomCreated) _onRoomCreated(RoomResult::TimedOut, 0);
       if (retryLobbyRequest(_roomLeaveRequest, dt) && _onRoomLeft) _onRoomLeft(RoomResult::TimedOut, 0);
@@ -543,6 +545,10 @@ namespace rtype::client {
           ++_deltaSnapshotsReceived;
           _snapshotBytesReceived += data.size();
           break;
+        case network::PacketType::Pong:
+          if (header.payloadSize != sizeof(std::uint64_t)) return reject(RejectReason::Malformed);
+          handlePong(reader);
+          break;
         case network::PacketType::RoomListAck:
           handleRoomList(reader);
           break;
@@ -682,6 +688,8 @@ namespace rtype::client {
     static constexpr std::uint8_t MAX_CONNECT_RETRIES = 8;
     static constexpr std::size_t ROOM_ENTRY_SIZE = 8;
     static constexpr double THROUGHPUT_WINDOW_SECONDS = 1.0;
+    static constexpr float PING_INTERVAL_SECONDS = 0.5f;
+    static constexpr std::size_t MAX_PENDING_PINGS = 64;
     static constexpr std::uint16_t ROOM_RESULT_SIZE = 5;
     static constexpr std::size_t MAX_RELIABLE_HISTORY = 512;
     static constexpr std::size_t MAX_DESTROYED_HISTORY = 1024;
@@ -869,6 +877,40 @@ namespace rtype::client {
     }
 
     void reject(RejectReason reason) { _stats.reject(reason); }
+
+    void advanceClock(float dt) {
+      if (std::isfinite(dt) && dt > 0.0f) _clockSeconds += static_cast<double>(dt);
+    }
+
+    [[nodiscard]] std::uint64_t clockMicroseconds() const {
+      return static_cast<std::uint64_t>(std::llround(_clockSeconds * 1000000.0));
+    }
+
+    void updatePings(float dt) {
+      if (_state != SessionState::Lobby && _state != SessionState::InGame) return;
+      if (std::isfinite(dt) && dt > 0.0f) _pingTimer += dt;
+      if (_hasSentPing && _pingTimer < PING_INTERVAL_SECONDS) return;
+      _pingTimer = 0.0f;
+      _hasSentPing = true;
+      const std::uint64_t timestamp = clockMicroseconds();
+      network::PacketStreamWriter payload;
+      payload << timestamp;
+      sendToServer(buildPacket(network::PacketType::Ping, payload.getBuffer()));
+      ++_stats.pingsSent;
+      _pendingPings.push_back(timestamp);
+      while (_pendingPings.size() > MAX_PENDING_PINGS) _pendingPings.pop_front();
+    }
+
+    void handlePong(network::PacketStreamReader& reader) {
+      std::uint64_t timestamp{0};
+      reader >> timestamp;
+      const auto it = std::find(_pendingPings.begin(), _pendingPings.end(), timestamp);
+      if (it == _pendingPings.end()) return reject(RejectReason::Stale);
+      _pendingPings.erase(it);
+      ++_stats.pongsReceived;
+      const std::uint64_t now = clockMicroseconds();
+      _stats.lastRttMs = static_cast<double>(now >= timestamp ? now - timestamp : 0) / 1000.0;
+    }
 
     void updateThroughput(float dt) {
       if (!std::isfinite(dt) || dt <= 0.0f) return;
@@ -1119,6 +1161,10 @@ namespace rtype::client {
     std::deque<std::uint32_t> _receivedReliableOrder;
     NetStats _stats;
     double _throughputElapsed{0.0};
+    double _clockSeconds{0.0};
+    float _pingTimer{0.0f};
+    bool _hasSentPing{false};
+    std::deque<std::uint64_t> _pendingPings;
     std::uint64_t _throughputBytesSent{0};
     std::uint64_t _throughputBytesReceived{0};
     std::optional<std::uint8_t> _serverDifficulty;
