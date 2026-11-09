@@ -13,6 +13,7 @@
 #include "network/SnapshotDelta.hpp"
 #include "network/ProtocolExtension.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -222,6 +223,7 @@ namespace rtype::client {
       processIncomingPackets();
       flushPendingDestroys(dt);
       updatePendingDeltas(dt);
+      updateThroughput(dt);
     }
 
     std::optional<std::uint32_t> sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
@@ -679,6 +681,7 @@ namespace rtype::client {
     static constexpr float CONNECT_RETRY_INTERVAL = 0.5f;
     static constexpr std::uint8_t MAX_CONNECT_RETRIES = 8;
     static constexpr std::size_t ROOM_ENTRY_SIZE = 8;
+    static constexpr double THROUGHPUT_WINDOW_SECONDS = 1.0;
     static constexpr std::uint16_t ROOM_RESULT_SIZE = 5;
     static constexpr std::size_t MAX_RELIABLE_HISTORY = 512;
     static constexpr std::size_t MAX_DESTROYED_HISTORY = 1024;
@@ -866,6 +869,18 @@ namespace rtype::client {
     }
 
     void reject(RejectReason reason) { _stats.reject(reason); }
+
+    void updateThroughput(float dt) {
+      if (!std::isfinite(dt) || dt <= 0.0f) return;
+      _throughputElapsed += static_cast<double>(dt);
+      if (_throughputElapsed < THROUGHPUT_WINDOW_SECONDS) return;
+      _stats.bytesSentPerSecond = static_cast<double>(_stats.bytesSent - _throughputBytesSent) / _throughputElapsed;
+      _stats.bytesReceivedPerSecond =
+        static_cast<double>(_stats.bytesReceived - _throughputBytesReceived) / _throughputElapsed;
+      _throughputBytesSent = _stats.bytesSent;
+      _throughputBytesReceived = _stats.bytesReceived;
+      _throughputElapsed = 0.0;
+    }
 
     void sendToServer(const network::PacketData& packet) {
       _socket.send(packet, _serverEndpoint);
@@ -1103,6 +1118,9 @@ namespace rtype::client {
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     NetStats _stats;
+    double _throughputElapsed{0.0};
+    std::uint64_t _throughputBytesSent{0};
+    std::uint64_t _throughputBytesReceived{0};
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
     bool _socketOpen{false};

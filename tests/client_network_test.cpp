@@ -1205,6 +1205,38 @@ static void testNetStatsCountRejectedPacketsByReason() {
   assert(stats.packetsReceived == 15);
 }
 
+static void testNetStatsMeasureThroughputInBytesPerSecond() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+  const double header = sizeof(network::PacketHeader);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 0.0 && stats.bytesReceivedPerSecond == 0.0);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 2.0 * (header + 2) + (header + 4));
+  assert(stats.bytesReceivedPerSecond == header + 13);
+
+  for (int i = 0; i < 10; ++i) manager.sendInputs(false, false, false, true, false);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 2.0 * (header + 2) + (header + 4));
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 10.0 * (header + 17));
+  assert(stats.bytesReceivedPerSecond == 0.0);
+
+  for (int i = 0; i < 6; ++i) manager.sendInputs(false, false, false, true, false);
+  manager.update(2.0f);
+  assert(stats.bytesSentPerSecond == 6.0 * (header + 17) / 2.0);
+
+  manager.update(0.0f);
+  manager.update(-1.0f);
+  assert(stats.bytesSentPerSecond == 6.0 * (header + 17) / 2.0);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1236,5 +1268,6 @@ int main() {
   testNetStatsStartEmpty();
   testNetStatsCountPacketsAndBytes();
   testNetStatsCountRejectedPacketsByReason();
+  testNetStatsMeasureThroughputInBytesPerSecond();
   return 0;
 }
