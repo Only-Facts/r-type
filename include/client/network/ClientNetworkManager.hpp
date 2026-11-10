@@ -690,6 +690,8 @@ namespace rtype::client {
     static constexpr double THROUGHPUT_WINDOW_SECONDS = 1.0;
     static constexpr float PING_INTERVAL_SECONDS = 0.5f;
     static constexpr std::size_t MAX_PENDING_PINGS = 64;
+    static constexpr double RTT_SMOOTHING = 1.0 / 8.0;
+    static constexpr double JITTER_SMOOTHING = 1.0 / 16.0;
     static constexpr std::uint16_t ROOM_RESULT_SIZE = 5;
     static constexpr std::size_t MAX_RELIABLE_HISTORY = 512;
     static constexpr std::size_t MAX_DESTROYED_HISTORY = 1024;
@@ -909,7 +911,17 @@ namespace rtype::client {
       _pendingPings.erase(it);
       ++_stats.pongsReceived;
       const std::uint64_t now = clockMicroseconds();
-      _stats.lastRttMs = static_cast<double>(now >= timestamp ? now - timestamp : 0) / 1000.0;
+      recordRttSample(static_cast<double>(now >= timestamp ? now - timestamp : 0) / 1000.0);
+    }
+
+    void recordRttSample(double sample) {
+      const std::optional<double> previous = _stats.lastRttMs;
+      _stats.lastRttMs = sample;
+      _stats.rttMs = _stats.rttMs ? *_stats.rttMs + (sample - *_stats.rttMs) * RTT_SMOOTHING : sample;
+      if (!previous) return;
+      const double difference = std::abs(sample - *previous);
+      _stats.jitterMs = _stats.jitterMs ? *_stats.jitterMs + (difference - *_stats.jitterMs) * JITTER_SMOOTHING
+                                        : difference;
     }
 
     void updateThroughput(float dt) {

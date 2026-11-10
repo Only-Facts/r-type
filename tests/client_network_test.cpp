@@ -1303,6 +1303,45 @@ static void testPingsMeasureRoundTripTime() {
   assert(stats.pingsSent == 3);
 }
 
+static void answerNextPing(client::ClientNetworkManager& manager, ClientMockSocket& socket,
+                           std::uint32_t sequence, float delay) {
+  const network::Endpoint server{"127.0.0.1", 4242};
+  socket.sent.clear();
+  manager.update(0.5f);
+  const auto ping = lastSent(socket, network::PacketType::Ping);
+  assert(!ping.empty());
+  socket.enqueue(pongPacket(sequence, pingTimestamp(ping)), server);
+  manager.update(delay);
+}
+
+static void testRoundTripTimeIsSmoothedWithJitter() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const client::NetStats& stats = manager.getStats();
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.0f);
+
+  answerNextPing(manager, socket, 1, 0.040f);
+  assert(std::abs(*stats.lastRttMs - 40.0) < 0.01);
+  assert(std::abs(*stats.rttMs - 40.0) < 0.01);
+  assert(!stats.jitterMs);
+
+  answerNextPing(manager, socket, 2, 0.060f);
+  assert(std::abs(*stats.lastRttMs - 60.0) < 0.01);
+  assert(std::abs(*stats.rttMs - 42.5) < 0.01);
+  assert(stats.jitterMs && std::abs(*stats.jitterMs - 20.0) < 0.01);
+
+  answerNextPing(manager, socket, 3, 0.050f);
+  assert(std::abs(*stats.rttMs - 43.4375) < 0.01);
+  assert(std::abs(*stats.jitterMs - 19.375) < 0.01);
+
+  for (std::uint32_t i = 0; i < 60; ++i) answerNextPing(manager, socket, 10 + i, 0.050f);
+  assert(std::abs(*stats.rttMs - 50.0) < 0.1);
+  assert(*stats.jitterMs < 0.5);
+  assert(stats.pongsReceived == 63);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1336,5 +1375,6 @@ int main() {
   testNetStatsCountRejectedPacketsByReason();
   testNetStatsMeasureThroughputInBytesPerSecond();
   testPingsMeasureRoundTripTime();
+  testRoundTripTimeIsSmoothedWithJitter();
   return 0;
 }
