@@ -1342,6 +1342,54 @@ static void testRoundTripTimeIsSmoothedWithJitter() {
   assert(stats.pongsReceived == 63);
 }
 
+static void testLossIsEstimatedFromUnansweredPings() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.0f);
+  const std::uint64_t firstPing = pingTimestamp(lastSent(socket, network::PacketType::Ping));
+
+  std::uint32_t sequence = 1;
+  for (int i = 1; i <= 40; ++i) {
+    socket.sent.clear();
+    manager.update(0.5f);
+    const auto ping = lastSent(socket, network::PacketType::Ping);
+    assert(!ping.empty());
+    if (i % 4 != 0) {
+      socket.enqueue(pongPacket(sequence++, pingTimestamp(ping)), server);
+      manager.update(0.0f);
+    }
+    if (i == 4) {
+      assert(stats.pingsLost == 1);
+      assert(!stats.lossPercent);
+    }
+  }
+  manager.update(1.0f);
+
+  assert(stats.pingsSent == 42);
+  assert(stats.pongsReceived == 30);
+  assert(stats.pingsLost == 11);
+  assert(stats.lossPercent && std::abs(*stats.lossPercent - 27.5) < 0.01);
+
+  socket.enqueue(pongPacket(sequence++, firstPing), server);
+  manager.update(0.0f);
+  assert(stats.pongsReceived == 30);
+  assert(stats.rejectedFor(RejectReason::Stale) == 1);
+
+  for (int i = 0; i < 40; ++i) {
+    socket.sent.clear();
+    manager.update(0.5f);
+    socket.enqueue(pongPacket(sequence++, pingTimestamp(lastSent(socket, network::PacketType::Ping))), server);
+    manager.update(0.0f);
+  }
+  assert(stats.lossPercent && std::abs(*stats.lossPercent - 2.5) < 0.01);
+  assert(stats.pingsLost == 12);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1376,5 +1424,6 @@ int main() {
   testNetStatsMeasureThroughputInBytesPerSecond();
   testPingsMeasureRoundTripTime();
   testRoundTripTimeIsSmoothedWithJitter();
+  testLossIsEstimatedFromUnansweredPings();
   return 0;
 }

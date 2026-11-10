@@ -690,6 +690,9 @@ namespace rtype::client {
     static constexpr double THROUGHPUT_WINDOW_SECONDS = 1.0;
     static constexpr float PING_INTERVAL_SECONDS = 0.5f;
     static constexpr std::size_t MAX_PENDING_PINGS = 64;
+    static constexpr std::uint64_t PING_TIMEOUT_MICROSECONDS = 1000000;
+    static constexpr std::size_t LOSS_WINDOW = 40;
+    static constexpr std::size_t MIN_LOSS_SAMPLES = 10;
     static constexpr double RTT_SMOOTHING = 1.0 / 8.0;
     static constexpr double JITTER_SMOOTHING = 1.0 / 16.0;
     static constexpr std::uint16_t ROOM_RESULT_SIZE = 5;
@@ -889,6 +892,7 @@ namespace rtype::client {
     }
 
     void updatePings(float dt) {
+      expirePings();
       if (_state != SessionState::Lobby && _state != SessionState::InGame) return;
       if (std::isfinite(dt) && dt > 0.0f) _pingTimer += dt;
       if (_hasSentPing && _pingTimer < PING_INTERVAL_SECONDS) return;
@@ -900,7 +904,27 @@ namespace rtype::client {
       sendToServer(buildPacket(network::PacketType::Ping, payload.getBuffer()));
       ++_stats.pingsSent;
       _pendingPings.push_back(timestamp);
-      while (_pendingPings.size() > MAX_PENDING_PINGS) _pendingPings.pop_front();
+      while (_pendingPings.size() > MAX_PENDING_PINGS) {
+        _pendingPings.pop_front();
+        recordPingOutcome(true);
+      }
+    }
+
+    void expirePings() {
+      const std::uint64_t now = clockMicroseconds();
+      while (!_pendingPings.empty() && now - _pendingPings.front() >= PING_TIMEOUT_MICROSECONDS) {
+        _pendingPings.pop_front();
+        recordPingOutcome(true);
+      }
+    }
+
+    void recordPingOutcome(bool lost) {
+      if (lost) ++_stats.pingsLost;
+      _pingOutcomes.push_back(lost);
+      while (_pingOutcomes.size() > LOSS_WINDOW) _pingOutcomes.pop_front();
+      if (_pingOutcomes.size() < MIN_LOSS_SAMPLES) return;
+      const auto lostCount = std::count(_pingOutcomes.begin(), _pingOutcomes.end(), true);
+      _stats.lossPercent = 100.0 * static_cast<double>(lostCount) / static_cast<double>(_pingOutcomes.size());
     }
 
     void handlePong(network::PacketStreamReader& reader) {
@@ -910,6 +934,7 @@ namespace rtype::client {
       if (it == _pendingPings.end()) return reject(RejectReason::Stale);
       _pendingPings.erase(it);
       ++_stats.pongsReceived;
+      recordPingOutcome(false);
       const std::uint64_t now = clockMicroseconds();
       recordRttSample(static_cast<double>(now >= timestamp ? now - timestamp : 0) / 1000.0);
     }
@@ -1177,6 +1202,7 @@ namespace rtype::client {
     float _pingTimer{0.0f};
     bool _hasSentPing{false};
     std::deque<std::uint64_t> _pendingPings;
+    std::deque<bool> _pingOutcomes;
     std::uint64_t _throughputBytesSent{0};
     std::uint64_t _throughputBytesReceived{0};
     std::optional<std::uint8_t> _serverDifficulty;
