@@ -212,6 +212,7 @@ namespace rtype::client {
             if (unansweredJoin && _onRoomJoined) _onRoomJoined(RoomResult::TimedOut, *unansweredJoin);
           } else {
             sendToServer(_connectPacket);
+            ++_stats.retransmissionsSent;
             ++_connectAttempts;
             _connectRetryTimer = CONNECT_RETRY_INTERVAL;
           }
@@ -379,7 +380,10 @@ namespace rtype::client {
       if (header.type == network::PacketType::Ack) return reject(RejectReason::Malformed);
       if (isReliableServerPacket(header.type)) {
         sendAcknowledgement(header.sequence);
-        if (!rememberReliableSequence(header.sequence)) return reject(RejectReason::Duplicate);
+        if (!rememberReliableSequence(header.sequence)) {
+          ++_stats.retransmissionsReceived;
+          return reject(RejectReason::Duplicate);
+        }
       }
       if (isGameplayPacket(header.type) &&
           _state != SessionState::Connecting && _state != SessionState::InGame) return reject(RejectReason::OutsideRoom);
@@ -782,6 +786,7 @@ namespace rtype::client {
         return true;
       }
       sendToServer(request->packet);
+      ++_stats.retransmissionsSent;
       ++request->attempts;
       request->timer = CONNECT_RETRY_INTERVAL;
       return false;

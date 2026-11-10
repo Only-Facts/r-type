@@ -1390,6 +1390,47 @@ static void testLossIsEstimatedFromUnansweredPings() {
   assert(stats.pingsLost == 12);
 }
 
+static void testRetransmissionsAreCounted() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.requestRooms();
+  manager.createRoom(2, 1);
+  assert(stats.retransmissionsSent == 0);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 2);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 1, 5, 0), server);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 4);
+
+  manager.joinRoom("127.0.0.1", 4242, 5);
+  manager.update(0.5f);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 6);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == 3);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 2, 5, 0), server);
+  socket.enqueue(connectAckPacket(3, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.isConnected());
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 6);
+
+  assert(stats.retransmissionsReceived == 0);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(11, 2000), server);
+  manager.update(0.0f);
+  assert(stats.retransmissionsReceived == 2);
+  assert(stats.rejectedFor(client::RejectReason::Duplicate) == 3);
+  assert(countSent(socket, network::PacketType::Ack) >= 4 + 3);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1425,5 +1466,6 @@ int main() {
   testPingsMeasureRoundTripTime();
   testRoundTripTimeIsSmoothedWithJitter();
   testLossIsEstimatedFromUnansweredPings();
+  testRetransmissionsAreCounted();
   return 0;
 }
