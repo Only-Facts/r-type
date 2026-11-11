@@ -51,7 +51,11 @@ namespace rtype::game {
     void sendInputs();
     void applyLocalPrediction(float dt);
     void updateNetworkDebugLine(float dt);
+    void updateMetricsDebugLines();
     void sendFixedStepInputs(float dt);
+    bool returnToLobbyOnError();
+    void startLeaving();
+    void updateLeaving(float dt);
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -111,10 +115,20 @@ namespace rtype::game {
     std::size_t _snapshotBytesAtSample{0};
     double _snapshotKiBPerSecond{0.0};
     std::string _networkDebugText;
+    std::string _linkDebugText;
+    std::string _trafficDebugText;
+    std::string _issuesDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
     std::string _menuAction;
     std::string _menuScene;
+    std::string _lobbyScene;
+    std::string _leaveAction;
+    float _leaveTimeout;
+    bool _leaving{false};
+    float _leavingElapsed{0.0f};
+    std::optional<std::uint32_t> _roomId;
+    std::optional<client::ClientNetworkManager::RoomResult> _joinError;
     client::LocalPrediction _prediction;
     bool _predictionEnabled;
   };

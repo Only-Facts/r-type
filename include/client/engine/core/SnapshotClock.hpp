@@ -21,6 +21,13 @@ namespace rtype::engine {
       _maxExtrapolation = std::max(maxExtrapolationSeconds, 0.0);
     }
 
+    void reset() {
+      _offset = 0.0;
+      _synchronized = false;
+      _lastRenderTick = 0.0;
+      _hasRenderTick = false;
+    }
+
     void advance(float dt) {
       if (std::isfinite(dt) && dt > 0.0f) _localTime += static_cast<double>(dt);
     }

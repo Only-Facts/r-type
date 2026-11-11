@@ -11,12 +11,14 @@ namespace rtype::game {
       {"connecting_text", "Connecting to {host}:{port}..."},
       {"connected_text", "Connected - Player {player}"},
       {"timeout_text", "No answer from {host}:{port}"},
+      {"joining_text", "Joining room {room}..."},
+      {"leaving_text", "Leaving the room..."},
       {"players_text", "Players {count}/{max}"},
       {"joined_text", "Player {player} joined"},
       {"left_text", "Player {player} left the game"},
       {"health_text", "HP {hp}/{max}"},
       {"destroyed_text", "DESTROYED"},
-      {"destroyed_hint_text", "Press {menu} for the menu, {keys} to quit"},
+      {"destroyed_hint_text", "Press {menu} for the lobby, {keys} to quit"},
       {"player_destroyed_text", "Player {player} was destroyed"},
       {"difficulty_hud_text", "{difficulty}"},
       {"augment_text", "{label}  {time}s"},
@@ -95,7 +97,6 @@ namespace rtype::game {
     _centerHint = createText({0.5f, 0.42f}, {0.0f, static_cast<float>(scaled(_settings.bigTextSize))},
                              {0.5f, 0.0f}, scaled(_settings.textSize));
 
-    // boss bar: centered at the top of the screen, name and health above it, notifications below
     const float bossWidth = _settings.bossBarSize.x * _settings.scale;
     const float bossBarY = m + lineHeight * 0.75f;
     _bossName = createText({0.5f, 0.0f}, {0.0f, m}, {0.5f, 0.0f}, scaled(_settings.textSize));

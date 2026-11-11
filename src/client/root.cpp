@@ -3,6 +3,7 @@
 #include "engine/config/Config.hpp"
 #include "exception.hpp"
 #include "game/GameScene.hpp"
+#include "game/LobbyScene.hpp"
 #include "game/SkinScene.hpp"
 #include "game/TitleScene.hpp"
 #include "variables.hpp"
@@ -87,6 +88,9 @@ int main(int argc, const char* argv[]) {
     auto& scenes = engine.getSceneManager();
     scenes.addScene("title", std::make_shared<rtype::game::TitleScene>(engine.getContext()));
     scenes.addScene("skin", std::make_shared<rtype::game::SkinScene>(engine.getContext()));
+    scenes.addScene("lobby", [&engine]() -> std::shared_ptr<rtype::engine::IScene> {
+      return std::make_shared<rtype::game::LobbyScene>(engine.getContext());
+    });
     scenes.addScene("game", [&engine]() -> std::shared_ptr<rtype::engine::IScene> {
       return std::make_shared<rtype::game::GameScene>(engine.getContext());
     });
