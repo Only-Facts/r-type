@@ -15,6 +15,7 @@
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
 #include "exception.hpp"
+#include "game/LobbyScene.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
@@ -70,6 +71,9 @@ namespace rtype::game {
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
       _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
+      _lobbyScene(context.config.getString(SECTION_GAME, "lobby_scene", "lobby")),
+      _leaveAction(context.config.getString(SECTION_GAME, "leave_action", "back")),
+      _leaveTimeout(context.config.getFloat(SECTION_GAME, "leave_timeout", 1.5f)),
       _predictionEnabled(context.config.getBool(SECTION_NETWORK, "prediction", true)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
@@ -192,22 +196,34 @@ namespace rtype::game {
     _difficulty.load(_context.config, "difficulty");
     std::optional<std::uint8_t> skin;
     if (!_skins.empty()) skin = static_cast<std::uint8_t>(_skins.selected(_context.session));
-    // ask for the id of our previous game, so we keep the same player number after a game over
     std::optional<network::NetworkId> previousNetId;
     if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
       previousNetId = static_cast<network::NetworkId>(id);
-    _network.connectToServer(_host, _port,
-                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin, previousNetId);
+    const auto difficulty = static_cast<std::uint8_t>(_difficulty.selected(_context.session));
+    _network.setOnRoomJoined([this](client::ClientNetworkManager::RoomResult result, std::uint32_t) {
+      if (result != client::ClientNetworkManager::RoomResult::Success) _joinError = result;
+    });
+    if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0) {
+      _roomId = static_cast<std::uint32_t>(room);
+      _network.joinRoom(_host, _port, *_roomId, difficulty, skin, previousNetId);
+      _hud.setStatus("joining_text", {{"room", std::to_string(*_roomId)}}, engine::Color{});
+    } else
+      _network.connectToServer(_host, _port, difficulty, skin, previousNetId);
   }
 
   void GameScene::onUpdate(float dt) {
-    if (_localDead && _context.actions.isJustPressed(_menuAction)) {
-      _context.scenes.changeScene(_menuScene);
+    if (_leaving) {
+      updateLeaving(dt);
+      return;
+    }
+    if (_context.actions.isJustPressed(_leaveAction) || (_localDead && _context.actions.isJustPressed(_menuAction))) {
+      startLeaving();
       return;
     }
     sendFixedStepInputs(dt);
     _snapshotClock.advance(dt);
     _network.update(dt);
+    if (returnToLobbyOnError()) return;
     applyLocalPrediction(dt);
     _hud.update(dt);
     updateConnectionStatus(dt);
@@ -277,6 +293,44 @@ namespace rtype::game {
     const gameplay::MovementVector shown = _prediction.displayed();
     transform->position = {shown.x, shown.y};
     transform->targetPosition = transform->position;
+  }
+
+  void GameScene::startLeaving() {
+    _prediction.stop();
+    _hud.clearAugments();
+    if (!_network.leaveRoom()) {
+      _context.scenes.changeScene(_menuScene);
+      return;
+    }
+    _leaving = true;
+    _leavingElapsed = 0.0f;
+    _players.clear();
+    _deadPlayers.clear();
+    _localShip.reset();
+    _hud.setStatus("leaving_text", {}, engine::Color{});
+  }
+
+  void GameScene::updateLeaving(float dt) {
+    _network.update(dt);
+    _hud.update(dt);
+    _leavingElapsed += std::max(dt, 0.0f);
+    if (!_network.isLeaving() || _leavingElapsed >= _leaveTimeout) _context.scenes.changeScene(_menuScene);
+  }
+
+  bool GameScene::returnToLobbyOnError() {
+    using Network = client::ClientNetworkManager;
+    if (!_joinError && !_wasConnected && _network.getState() == Network::SessionState::Disconnected) {
+      if (_network.getDisconnectReason() == Network::DisconnectReason::Rejected) _joinError = Network::RoomResult::Full;
+      else if (_network.getDisconnectReason() == Network::DisconnectReason::TimedOut)
+        _joinError = Network::RoomResult::TimedOut;
+    }
+    if (!_joinError || !_context.scenes.hasScene(_lobbyScene)) return false;
+    _context.session.setInt(LobbyScene::SESSION_ERROR, static_cast<int>(*_joinError));
+    _context.session.setInt(LobbyScene::SESSION_ERROR_ROOM, static_cast<int>(_roomId.value_or(1)));
+    _context.session.setInt(LobbyScene::SESSION_ROOM, -1);
+    _joinError.reset();
+    _context.scenes.changeScene(_lobbyScene);
+    return true;
   }
 
   void GameScene::updateConnectionStatus(float dt) {

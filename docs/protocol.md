@@ -749,13 +749,17 @@ Notes:
 
 - The server never tells a client it was removed. A dead client knows it from
   its own `HealthUpdate` with `health = 0`; the reference client then shows
-  "game over" and offers to play again.
+  "DESTROYED" and offers to go back to the lobby, sending a `RoomLeaveReq`.
 - To play again, send a new `ConnectReq` (or `RoomJoinReq`) from the same
   socket with `previousNetId` set to the old id: the player gets the same
   number back if it is still free.
 - The 5-second connection timeout is a client choice (`connect_timeout` in
-  `client.cfg`). The reference client stops resending `ConnectReq` after 8
-  retries (about 4 seconds).
+  `client.cfg`). The reference client stops resending `ConnectReq` (or
+  `RoomJoinReq`) after 8 retries, about 4.5 seconds after the first send, and
+  goes back to its lobby with a "no answer" message.
+- The reference client leaves its room as soon as it sends `RoomLeaveReq`: it
+  destroys every remote entity and forgets the session (id, token, received
+  sequence numbers, snapshots) without waiting for `RoomLeaveAck`.
 
 ### Lobby
 
@@ -884,10 +888,10 @@ repeats the request itself. Every request can be repeated safely:
 | Request | Answer that stops the retries | Reference client |
 | --- | --- | --- |
 | `ConnectReq` | `ConnectAck` or `ConnectReject` | Every 0.5 s, up to 8 retries. |
-| `RoomListReq` | `RoomListAck` | Not sent by the reference client. |
-| `RoomCreateReq` | `RoomCreateAck` | Not sent by the reference client. |
-| `RoomJoinReq` | `RoomJoinAck` | Not sent by the reference client. |
-| `RoomLeaveReq` | `RoomLeaveAck` (same answer for 10 s after leaving) | Not sent by the reference client. |
+| `RoomListReq` | `RoomListAck` | Every 0.5 s, up to 8 retries. |
+| `RoomCreateReq` | `RoomCreateAck` | Every 0.5 s, up to 8 retries. |
+| `RoomJoinReq` | `RoomJoinAck` | Every 0.5 s, up to 8 retries. |
+| `RoomLeaveReq` | `RoomLeaveAck` (same answer for 10 s after leaving) | Every 0.5 s, up to 8 retries; the game screen waits at most 1.5 s for the answer. |
 | `SnapshotRequest` | next `GameStateSyncPacked` | At most every 0.25 s. |
 | `Ping` | `Pong` | Not sent by the reference client. |
 
@@ -987,7 +991,11 @@ The reference client drops a datagram, without answer, if:
    `count`, or an invalid delta (see [section 8](#8-inputs-and-snapshots));
 5. it is a duplicate reliable packet (after sending its `Ack`);
 6. it is an `InputAck`, snapshot or event older than the last one applied
-   (see [section 11](#11-sequencing-reliability-timeouts-and-errors)).
+   (see [section 11](#11-sequencing-reliability-timeouts-and-errors));
+7. it is a gameplay packet (spawn, destroy, health, augment, score, snapshot
+   or `InputAck`) received while the client is not connecting to or playing
+   in a room, for example a late packet of the room it just left. Reliable
+   ones are still acknowledged.
 
 An independent client should apply at least rules 1 to 5: they protect
 against corrupted, forged and repeated packets.

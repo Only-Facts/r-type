@@ -44,6 +44,42 @@ namespace rtype::client {
     };
     using InputAckCallback = std::function<void(const InputAck&)>;
 
+    enum class SessionState : std::uint8_t {
+      Disconnected,
+      Lobby,
+      Connecting,
+      InGame
+    };
+
+    enum class DisconnectReason : std::uint8_t {
+      None,
+      Left,
+      Rejected,
+      TimedOut
+    };
+
+    struct RoomInfo {
+      std::uint32_t id{0};
+      std::uint8_t players{0};
+      std::uint8_t capacity{0};
+      std::uint8_t state{0};
+      std::uint8_t difficulty{0};
+    };
+
+    enum class RoomResult : std::uint8_t {
+      Success,
+      NotFound,
+      Full,
+      AlreadyInRoom,
+      InvalidSettings,
+      LimitReached,
+      TimedOut,
+      Unknown
+    };
+
+    using RoomListCallback = std::function<void(RoomResult, const std::vector<RoomInfo>&)>;
+    using RoomCallback = std::function<void(RoomResult, std::uint32_t roomId)>;
+
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
 
@@ -55,16 +91,26 @@ namespace rtype::client {
     void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
     void setOnScoreChanged(ScoreCallback callback) { _onScore = std::move(callback); }
     void setOnInputAck(InputAckCallback callback) { _onInputAck = std::move(callback); }
+    void setOnRoomList(RoomListCallback callback) { _onRoomList = std::move(callback); }
+    void setOnRoomCreated(RoomCallback callback) { _onRoomCreated = std::move(callback); }
+    void setOnRoomJoined(RoomCallback callback) { _onRoomJoined = std::move(callback); }
+    void setOnRoomLeft(RoomCallback callback) { _onRoomLeft = std::move(callback); }
 
     static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
 
-    void connectToServer(const std::string& host, unsigned short port,
+    void openLobby(const std::string& host, unsigned short port) {
+      if (_state == SessionState::Connecting || _state == SessionState::InGame) return;
+      openSocket(host, port);
+      _state = SessionState::Lobby;
+      _disconnectReason = DisconnectReason::None;
+    }
+
+    bool connectToServer(const std::string& host, unsigned short port,
                          std::optional<std::uint8_t> difficulty = std::nullopt,
                          std::optional<std::uint8_t> skin = std::nullopt,
                          std::optional<network::NetworkId> previousNetId = std::nullopt) {
-      _serverEndpoint = {host, port};
-      _socket.bind(0);
-      _socket.setNonBlocking(true);
+      if (!canStartConnecting()) return false;
+      openSocket(host, port);
 
       const std::uint16_t payloadSize = previousNetId ? 6 : skin ? 2 : difficulty ? 1 : 0;
       network::PacketHeader header{network::PROTOCOL_MAGIC, network::PacketType::ConnectReq, _outgoingSeq++,
@@ -74,47 +120,111 @@ namespace rtype::client {
       if (difficulty || skin || previousNetId) writer << difficulty.value_or(NO_PREFERENCE);
       if (skin || previousNetId) writer << skin.value_or(NO_PREFERENCE);
       if (previousNetId) writer << *previousNetId;
-      _connectPacket = writer.getBuffer();
-      _socket.send(_connectPacket, _serverEndpoint);
-      _connectRetryTimer = CONNECT_RETRY_INTERVAL;
-      _connectAttempts = 0;
-      _isConnected = false;
-      _sessionToken = 0;
-      _serverDifficulty.reset();
-      _receivedReliable.clear();
-      _receivedReliableOrder.clear();
+      startConnecting(writer.getBuffer());
+      return true;
+    }
+
+    bool requestRooms() {
+      if (_state != SessionState::Lobby) return false;
+      startLobbyRequest(_roomListRequest, network::PacketType::RoomListReq, {});
+      return true;
+    }
+
+    bool createRoom(std::uint8_t capacity, std::uint8_t difficulty) {
+      if (_state != SessionState::Lobby) return false;
+      network::PacketStreamWriter payload;
+      payload << capacity << difficulty;
+      startLobbyRequest(_roomCreateRequest, network::PacketType::RoomCreateReq, payload.getBuffer());
+      return true;
+    }
+
+    bool joinRoom(const std::string& host, unsigned short port, std::uint32_t roomId,
+                  std::optional<std::uint8_t> difficulty = std::nullopt,
+                  std::optional<std::uint8_t> skin = std::nullopt,
+                  std::optional<network::NetworkId> previousNetId = std::nullopt) {
+      if (!canStartConnecting()) return false;
+      openSocket(host, port);
+      network::PacketStreamWriter payload;
+      payload << roomId << difficulty.value_or(NO_PREFERENCE) << skin.value_or(NO_PREFERENCE)
+              << previousNetId.value_or(network::NetworkId{0});
+      startConnecting(buildPacket(network::PacketType::RoomJoinReq, payload.getBuffer()));
+      _joinRoomId = roomId;
+      return true;
+    }
+
+    bool leaveRoom() {
+      if (_state == SessionState::InGame) {
+        network::PacketStreamWriter payload;
+        payload << _localNetId << _sessionToken;
+        startLobbyRequest(_roomLeaveRequest, network::PacketType::RoomLeaveReq, payload.getBuffer());
+      } else if (_state != SessionState::Connecting) {
+        return false;
+      }
+      reset();
+      _connectPacket.clear();
+      _joinRoomId.reset();
+      _joinAccepted = false;
+      _state = SessionState::Lobby;
+      _disconnectReason = DisconnectReason::Left;
+      return true;
+    }
+
+    void reset() {
+      for (const auto& [netId, remote] : _networkToEcs) _registry.destroyEntity(remote.entity);
+      for (const auto& pending : _pendingDestroys) _registry.destroyEntity(pending.entity);
+      _networkToEcs.clear();
+      _pendingDestroys.clear();
+      _destroyedEntities.clear();
       _pendingPlayerSpawns.clear();
       _pendingHealth.clear();
       _pendingAugments.clear();
       _lastHealthSequences.clear();
       _lastAugmentSequences.clear();
       _lastScoreSequences.clear();
+      _playerSkins.clear();
+      _receivedReliable.clear();
+      _receivedReliableOrder.clear();
+      _localNetId = 0;
+      _sessionToken = 0;
+      _serverDifficulty.reset();
+      _lastSyncSeq = 0;
       _hasSyncSequence = false;
+      _lastSnapshotTick = 0;
       _hasSnapshotTick = false;
+      _lastInputAck = 0;
       _hasInputAck = false;
       _snapshotHistory.clear();
       _pendingDeltas.clear();
       _fullRequestCooldown = 0.0f;
       _awaitingFullSnapshot = false;
+      if (_snapshotClock) _snapshotClock->reset();
     }
 
     void update(float dt) {
-      if (!_isConnected && !_connectPacket.empty() &&
-          _connectAttempts < MAX_CONNECT_RETRIES) {
+      if (_state == SessionState::Connecting && !_connectPacket.empty()) {
         _connectRetryTimer -= std::max(dt, 0.0f);
         if (_connectRetryTimer <= 0.0f) {
-          _socket.send(_connectPacket, _serverEndpoint);
-          ++_connectAttempts;
-          _connectRetryTimer = CONNECT_RETRY_INTERVAL;
+          if (_connectAttempts >= MAX_CONNECT_RETRIES) {
+            const std::optional<std::uint32_t> unansweredJoin = _joinAccepted ? std::nullopt : _joinRoomId;
+            endSession(DisconnectReason::TimedOut);
+            if (unansweredJoin && _onRoomJoined) _onRoomJoined(RoomResult::TimedOut, *unansweredJoin);
+          } else {
+            _socket.send(_connectPacket, _serverEndpoint);
+            ++_connectAttempts;
+            _connectRetryTimer = CONNECT_RETRY_INTERVAL;
+          }
         }
       }
+      if (retryLobbyRequest(_roomListRequest, dt) && _onRoomList) _onRoomList(RoomResult::TimedOut, {});
+      if (retryLobbyRequest(_roomCreateRequest, dt) && _onRoomCreated) _onRoomCreated(RoomResult::TimedOut, 0);
+      if (retryLobbyRequest(_roomLeaveRequest, dt) && _onRoomLeft) _onRoomLeft(RoomResult::TimedOut, 0);
       processIncomingPackets();
       flushPendingDestroys(dt);
       updatePendingDeltas(dt);
     }
 
     std::optional<std::uint32_t> sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
-      if (!_isConnected) return std::nullopt;
+      if (!isConnected()) return std::nullopt;
 
       const std::uint32_t inputSequence = _outgoingSeq++;
       network::PacketHeader header{
@@ -142,20 +252,25 @@ namespace rtype::client {
     }
 
     void disconnect() {
-      if (!_isConnected) return;
+      if (_state == SessionState::Disconnected) return;
 
-      network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++,
-        static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
-      };
-      network::PacketStreamWriter writer;
-      writer << header << _localNetId << _sessionToken;
-      _socket.send(writer.getBuffer(), _serverEndpoint);
-      _isConnected = false;
-      _sessionToken = 0;
+      if (_state == SessionState::InGame) {
+        network::PacketHeader header{
+          network::PROTOCOL_MAGIC, network::PacketType::Disconnect, _outgoingSeq++,
+          static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
+        };
+        network::PacketStreamWriter writer;
+        writer << header << _localNetId << _sessionToken;
+        _socket.send(writer.getBuffer(), _serverEndpoint);
+      }
+      reset();
+      endSession(DisconnectReason::Left);
     }
 
-    [[nodiscard]] bool isConnected() const { return _isConnected; }
+    [[nodiscard]] bool isLeaving() const { return _roomLeaveRequest.has_value(); }
+    [[nodiscard]] SessionState getState() const { return _state; }
+    [[nodiscard]] DisconnectReason getDisconnectReason() const { return _disconnectReason; }
+    [[nodiscard]] bool isConnected() const { return _state == SessionState::InGame; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
     void setSnapshotClock(engine::SnapshotClock* clock) { _snapshotClock = clock; }
 
@@ -258,6 +373,8 @@ namespace rtype::client {
         sendAcknowledgement(header.sequence);
         if (!rememberReliableSequence(header.sequence)) return;
       }
+      if (isGameplayPacket(header.type) &&
+          _state != SessionState::Connecting && _state != SessionState::InGame) return;
       const bool isSync =
         header.type == network::PacketType::GameStateSync ||
         header.type == network::PacketType::GameStateSyncPacked ||
@@ -309,7 +426,7 @@ namespace rtype::client {
       if (header.type == network::PacketType::InputAck) {
         InputAck ack;
         reader >> ack.lastInput >> ack.tick >> ack.x >> ack.y;
-        if (!_isConnected || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return;
+        if (!isConnected() || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return;
         _lastInputAck = ack.lastInput;
         _hasInputAck = true;
         if (_onInputAck) _onInputAck(ack);
@@ -329,21 +446,27 @@ namespace rtype::client {
 
       switch (header.type) {
         case network::PacketType::ConnectReject:
-          _connectPacket.clear();
-          _isConnected = false;
+          if (_state != SessionState::Connecting) break;
+          endSession(DisconnectReason::Rejected);
           _pendingPlayerSpawns.clear();
           break;
         case network::PacketType::ConnectAck: {
-          reader >> _localNetId;
+          network::NetworkId netId{};
+          std::optional<std::uint8_t> difficulty;
+          std::uint64_t token{0};
+          reader >> netId;
           if (reader.hasMoreData()) {
-            std::uint8_t difficulty = 0;
-            reader >> difficulty;
-            _serverDifficulty = difficulty;
+            std::uint8_t value = 0;
+            reader >> value;
+            difficulty = value;
           }
-          if (reader.hasMoreData()) reader >> _sessionToken;
-          if (_sessionToken == 0) return;
+          if (reader.hasMoreData()) reader >> token;
+          if (token == 0 || (_state != SessionState::Connecting && _state != SessionState::InGame)) return;
+          _localNetId = netId;
+          if (difficulty) _serverDifficulty = difficulty;
+          _sessionToken = token;
           _connectPacket.clear();
-          _isConnected = true;
+          _state = SessionState::InGame;
           flushPendingPlayerSpawns();
           break;
         }
@@ -357,7 +480,7 @@ namespace rtype::client {
           }
           if (spawn.skin != NO_PREFERENCE)
             _playerSkins[spawn.netId] = spawn.skin;
-          if (!_isConnected) {
+          if (!isConnected()) {
             if (_pendingPlayerSpawns.size() < MAX_PENDING_PLAYER_SPAWNS)
               _pendingPlayerSpawns.push_back(spawn);
             break;
@@ -410,6 +533,18 @@ namespace rtype::client {
           handleSnapshotDelta(network::readSnapshotDelta(reader, MAX_SNAPSHOT_COUNT));
           ++_deltaSnapshotsReceived;
           _snapshotBytesReceived += data.size();
+          break;
+        case network::PacketType::RoomListAck:
+          handleRoomList(reader);
+          break;
+        case network::PacketType::RoomCreateAck:
+          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomCreate(reader);
+          break;
+        case network::PacketType::RoomJoinAck:
+          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomJoin(reader);
+          break;
+        case network::PacketType::RoomLeaveAck:
+          if (header.payloadSize == ROOM_RESULT_SIZE) handleRoomLeave(reader);
           break;
         default: break;
       }
@@ -498,7 +633,7 @@ namespace rtype::client {
     }
 
     void requestFullSnapshot() {
-      if (!_isConnected || _fullRequestCooldown > 0.0f) return;
+      if (!isConnected() || _fullRequestCooldown > 0.0f) return;
       network::PacketHeader header{
         network::PROTOCOL_MAGIC, network::PacketType::SnapshotRequest, _outgoingSeq++,
         static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
@@ -533,6 +668,8 @@ namespace rtype::client {
 
     static constexpr float CONNECT_RETRY_INTERVAL = 0.5f;
     static constexpr std::uint8_t MAX_CONNECT_RETRIES = 8;
+    static constexpr std::size_t ROOM_ENTRY_SIZE = 8;
+    static constexpr std::uint16_t ROOM_RESULT_SIZE = 5;
     static constexpr std::size_t MAX_RELIABLE_HISTORY = 512;
     static constexpr std::size_t MAX_DESTROYED_HISTORY = 1024;
     static constexpr std::size_t MAX_PENDING_PLAYER_SPAWNS = 4;
@@ -567,6 +704,166 @@ namespace rtype::client {
     static std::uint64_t augmentKey(network::NetworkId netId,
                                     std::uint8_t augment) {
       return (static_cast<std::uint64_t>(netId) << 8) | augment;
+    }
+
+    void startConnecting(const network::PacketData& packet) {
+      reset();
+      _roomListRequest.reset();
+      _roomCreateRequest.reset();
+      _joinRoomId.reset();
+      _joinAccepted = false;
+      _connectPacket = packet;
+      _socket.send(_connectPacket, _serverEndpoint);
+      _connectRetryTimer = CONNECT_RETRY_INTERVAL;
+      _connectAttempts = 0;
+      _state = SessionState::Connecting;
+      _disconnectReason = DisconnectReason::None;
+    }
+
+    bool canStartConnecting() const {
+      return _state != SessionState::Connecting && _state != SessionState::InGame && !isLeaving();
+    }
+
+    struct LobbyRequest {
+      network::PacketData packet;
+      float timer{0.0f};
+      std::uint8_t attempts{0};
+    };
+
+    network::PacketData buildPacket(network::PacketType type, const network::PacketData& payload) {
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, type, _outgoingSeq++, static_cast<std::uint16_t>(payload.size())
+      };
+      network::PacketStreamWriter writer;
+      writer << header;
+      network::PacketData packet = writer.getBuffer();
+      packet.insert(packet.end(), payload.begin(), payload.end());
+      return packet;
+    }
+
+    void startLobbyRequest(std::optional<LobbyRequest>& request, network::PacketType type,
+                           const network::PacketData& payload) {
+      request = LobbyRequest{buildPacket(type, payload), CONNECT_RETRY_INTERVAL, 0};
+      _socket.send(request->packet, _serverEndpoint);
+    }
+
+    bool retryLobbyRequest(std::optional<LobbyRequest>& request, float dt) {
+      if (!request) return false;
+      request->timer -= std::max(dt, 0.0f);
+      if (request->timer > 0.0f) return false;
+      if (request->attempts >= MAX_CONNECT_RETRIES) {
+        request.reset();
+        return true;
+      }
+      _socket.send(request->packet, _serverEndpoint);
+      ++request->attempts;
+      request->timer = CONNECT_RETRY_INTERVAL;
+      return false;
+    }
+
+    static RoomResult createResult(std::uint8_t status) {
+      switch (status) {
+        case 0: return RoomResult::Success;
+        case 1: return RoomResult::InvalidSettings;
+        case 2: return RoomResult::LimitReached;
+        default: return RoomResult::Unknown;
+      }
+    }
+
+    static RoomResult joinResult(std::uint8_t status) {
+      switch (status) {
+        case 0: return RoomResult::Success;
+        case 1: return RoomResult::NotFound;
+        case 2: return RoomResult::Full;
+        case 3: return RoomResult::AlreadyInRoom;
+        default: return RoomResult::Unknown;
+      }
+    }
+
+    void handleRoomList(network::PacketStreamReader& reader) {
+      if (!_roomListRequest) return;
+      std::uint16_t count{0};
+      reader >> count;
+      if (reader.remaining() != static_cast<std::size_t>(count) * ROOM_ENTRY_SIZE) return;
+      std::vector<RoomInfo> rooms(count);
+      for (auto& room : rooms)
+        reader >> room.id >> room.players >> room.capacity >> room.state >> room.difficulty;
+      _roomListRequest.reset();
+      if (_onRoomList) _onRoomList(RoomResult::Success, rooms);
+    }
+
+    void handleRoomCreate(network::PacketStreamReader& reader) {
+      if (!_roomCreateRequest) return;
+      std::uint32_t roomId{0};
+      std::uint8_t status{0};
+      reader >> roomId >> status;
+      _roomCreateRequest.reset();
+      if (_onRoomCreated) _onRoomCreated(createResult(status), roomId);
+    }
+
+    void handleRoomJoin(network::PacketStreamReader& reader) {
+      std::uint32_t roomId{0};
+      std::uint8_t status{0};
+      reader >> roomId >> status;
+      if (_state != SessionState::Connecting || !_joinRoomId || *_joinRoomId != roomId) return;
+      const RoomResult result = joinResult(status);
+      if (result == RoomResult::Success) {
+        if (_joinAccepted) return;
+        _joinAccepted = true;
+      } else {
+        _connectPacket.clear();
+        _joinRoomId.reset();
+        _state = SessionState::Lobby;
+      }
+      if (_onRoomJoined) _onRoomJoined(result, roomId);
+    }
+
+    void handleRoomLeave(network::PacketStreamReader& reader) {
+      if (!_roomLeaveRequest) return;
+      std::uint32_t roomId{0};
+      std::uint8_t status{0};
+      reader >> roomId >> status;
+      _roomLeaveRequest.reset();
+      const RoomResult result = status == 0 ? RoomResult::Success : status == 1 ? RoomResult::NotFound
+                                                                                 : RoomResult::Unknown;
+      if (_onRoomLeft) _onRoomLeft(result, roomId);
+    }
+
+    static bool isGameplayPacket(network::PacketType type) {
+      switch (type) {
+        case network::PacketType::SpawnPlayer:
+        case network::PacketType::DestroyEntity:
+        case network::PacketType::SpawnEntity:
+        case network::PacketType::HealthUpdate:
+        case network::PacketType::AugmentUpdate:
+        case network::PacketType::ScoreUpdate:
+        case network::PacketType::GameStateSync:
+        case network::PacketType::GameStateSyncPacked:
+        case network::PacketType::GameStateSyncDelta:
+        case network::PacketType::InputAck:
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    void openSocket(const std::string& host, unsigned short port) {
+      _serverEndpoint = {host, port};
+      if (_socketOpen) return;
+      _socket.bind(0);
+      _socket.setNonBlocking(true);
+      _socketOpen = true;
+    }
+
+    void endSession(DisconnectReason reason) {
+      _roomListRequest.reset();
+      _roomCreateRequest.reset();
+      _joinRoomId.reset();
+      _joinAccepted = false;
+      _connectPacket.clear();
+      _sessionToken = 0;
+      _state = SessionState::Disconnected;
+      _disconnectReason = reason;
     }
 
     void sendAcknowledgement(std::uint32_t acknowledgedSequence) {
@@ -741,6 +1038,15 @@ namespace rtype::client {
     AugmentCallback _onAugment;
     ScoreCallback _onScore;
     InputAckCallback _onInputAck;
+    RoomListCallback _onRoomList;
+    RoomCallback _onRoomCreated;
+    RoomCallback _onRoomJoined;
+    RoomCallback _onRoomLeft;
+    std::optional<LobbyRequest> _roomListRequest;
+    std::optional<LobbyRequest> _roomCreateRequest;
+    std::optional<LobbyRequest> _roomLeaveRequest;
+    std::optional<std::uint32_t> _joinRoomId;
+    bool _joinAccepted{false};
     std::uint32_t _lastInputAck{0};
     bool _hasInputAck{false};
     network::Endpoint _serverEndpoint;
@@ -781,7 +1087,9 @@ namespace rtype::client {
     std::size_t _droppedPackets{0};
     std::optional<std::uint8_t> _serverDifficulty;
     std::unordered_map<network::NetworkId, std::uint8_t> _playerSkins;
-    bool _isConnected{false};
+    bool _socketOpen{false};
+    SessionState _state{SessionState::Disconnected};
+    DisconnectReason _disconnectReason{DisconnectReason::None};
   };
 }
 

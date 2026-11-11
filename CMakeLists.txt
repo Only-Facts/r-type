@@ -186,6 +186,15 @@ if(BUILD_TESTING)
   target_link_libraries(rtype_protocol_examples_test PRIVATE Threads::Threads)
   add_test(NAME protocol_examples COMMAND rtype_protocol_examples_test)
 
+  add_executable(rtype_lobby_flow_test tests/lobby_flow_test.cpp)
+  target_include_directories(rtype_lobby_flow_test PRIVATE
+    "include/client"
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_lobby_flow_test PRIVATE Threads::Threads)
+  add_test(NAME lobby_flow COMMAND rtype_lobby_flow_test)
+
   add_executable(rtype_server_stress_test tests/server_stress_test.cpp)
   target_include_directories(rtype_server_stress_test PRIVATE
     "include/common"
