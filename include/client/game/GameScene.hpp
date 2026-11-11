@@ -117,6 +117,7 @@ namespace rtype::game {
     std::string _networkDebugText;
     std::string _linkDebugText;
     std::string _trafficDebugText;
+    std::string _issuesDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
     std::string _menuAction;

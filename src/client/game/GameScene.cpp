@@ -45,6 +45,7 @@ namespace rtype::game {
     constexpr const char* DEBUG_LINE_NETWORK = "network";
     constexpr const char* DEBUG_LINE_LINK = "network_link";
     constexpr const char* DEBUG_LINE_TRAFFIC = "network_traffic";
+    constexpr const char* DEBUG_LINE_ISSUES = "network_traffic_issues";
     constexpr int MAX_INPUT_STEPS_PER_FRAME = 4;
     constexpr const char* SESSION_NET_ID = "player_net_id";
 
@@ -83,6 +84,7 @@ namespace rtype::game {
       _networkDebugText(context.config.getString(SECTION_NETWORK, "debug_text")),
       _linkDebugText(context.config.getString(SECTION_NETWORK, "debug_link_text")),
       _trafficDebugText(context.config.getString(SECTION_NETWORK, "debug_traffic_text")),
+      _issuesDebugText(context.config.getString(SECTION_NETWORK, "debug_issues_text")),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
@@ -160,6 +162,7 @@ namespace rtype::game {
     _context.debug.lines.erase(DEBUG_LINE_NETWORK);
     _context.debug.lines.erase(DEBUG_LINE_LINK);
     _context.debug.lines.erase(DEBUG_LINE_TRAFFIC);
+    _context.debug.lines.erase(DEBUG_LINE_ISSUES);
   }
 
   void GameScene::exit() {
@@ -305,14 +308,18 @@ namespace rtype::game {
         {"out", formatDecimal(stats.bytesSentPerSecond, 0)},
         {"received", std::to_string(stats.packetsReceived)},
         {"sent", std::to_string(stats.packetsSent)},
+        {"resent", std::to_string(stats.retransmissionsSent)},
+        {"resent_in", std::to_string(stats.retransmissionsReceived)},
+      });
+    }
+    if (!_issuesDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_ISSUES] = engine::formatTemplate(_issuesDebugText, {
         {"rejected", std::to_string(stats.rejectedTotal())},
         {"sender", std::to_string(stats.rejectedFor(RejectReason::WrongSender))},
         {"malformed", std::to_string(stats.rejectedFor(RejectReason::Malformed))},
         {"duplicate", std::to_string(stats.rejectedFor(RejectReason::Duplicate))},
         {"stale", std::to_string(stats.rejectedFor(RejectReason::Stale))},
         {"outside", std::to_string(stats.rejectedFor(RejectReason::OutsideRoom))},
-        {"resent", std::to_string(stats.retransmissionsSent)},
-        {"resent_in", std::to_string(stats.retransmissionsReceived)},
         {"corrections", std::to_string(_prediction.correctionCount())},
         {"snaps", std::to_string(_prediction.snapCount())},
       });
