@@ -1,14 +1,17 @@
 #ifndef GAMEROOM_HPP
 #define GAMEROOM_HPP
 
+#include "gameplay/PlayerMovement.hpp"
 #include "network/INetworkSocket.hpp"
 #include "network/Protocol.hpp"
 #include "network/PacketStream.hpp"
+#include "network/SnapshotDelta.hpp"
 #include "ReliableUdpQueue.hpp"
 #include "ServerMetrics.hpp"
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include <deque>
 #include <cmath>
 #include <cstdlib>
 #include <optional>
@@ -47,6 +50,12 @@ namespace rtype::server {
     float baseY{0.0f};
   };
 
+  struct QueuedInput {
+    std::uint32_t sequence{0};
+    gameplay::MovementInput movement;
+    bool shoot{false};
+  };
+
   struct ConnectedClient {
     network::NetworkId id;
     network::Endpoint endpoint;
@@ -64,6 +73,11 @@ namespace rtype::server {
     float shootCooldown{0.f};
     bool shootPressed{false};
     float hitCooldown{0.0f};
+    gameplay::MovementInput movement;
+    std::deque<QueuedInput> pendingInputs;
+    std::uint32_t lastProcessedInput{0};
+    bool hasProcessedInput{false};
+    bool needsFullSnapshot{true};
     std::uint32_t score{0};
     std::uint64_t sessionToken{0};
     std::uint32_t lastInputSequence{0};
@@ -135,6 +149,11 @@ namespace rtype::server {
             if (header.payloadSize == sizeof(network::NetworkId) +
                 sizeof(std::uint64_t))
               handleDisconnect(reader, sender);
+            break;
+          case network::PacketType::SnapshotRequest:
+            if (header.payloadSize == sizeof(network::NetworkId) +
+                sizeof(std::uint64_t))
+              handleSnapshotRequest(reader, sender);
             break;
           default:
             break;
@@ -212,11 +231,30 @@ namespace rtype::server {
     static constexpr float WORLD_HEIGHT = 1080.0f;
     static constexpr float PLAYER_WIDTH = 33.0f;
     static constexpr float PLAYER_HEIGHT = 34.0f;
+    static constexpr float BOSS_WIDTH = 224.0f;
+    static constexpr float BOSS_HEIGHT = 224.0f;
+    static constexpr float PLAYER_MISSILE_WIDTH = 18.0f;
+    static constexpr float PLAYER_MISSILE_HEAVY_WIDTH = 24.0f;
+    static constexpr float PLAYER_MISSILE_HEIGHT = 6.0f;
     static constexpr float MAX_FRAME_DELTA = 0.25f;
     static constexpr std::size_t MAX_CATCHUP_TICKS = 15;
     static constexpr std::size_t MAX_ACTIVE_ENTITIES = 48;
     static constexpr std::size_t MAX_SNAPSHOT_ENTITIES = 52;
     static constexpr std::uint64_t SNAPSHOT_KEYFRAME_INTERVAL = 60;
+    static constexpr std::size_t MAX_PENDING_INPUTS = 8;
+    static constexpr std::size_t MAX_INPUTS_PER_TICK = 2;
+
+    static bool rectanglesOverlap(float ax, float ay, float aw, float ah,
+                                  float bx, float by, float bw, float bh) {
+      return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+    }
+
+    static bool missileHitsBoss(const ServerEntity& missile, const ServerEntity& boss) {
+      const float width = missile.type == ServerEntityType::PlayerMissileHeavy
+        ? PLAYER_MISSILE_HEAVY_WIDTH : PLAYER_MISSILE_WIDTH;
+      return rectanglesOverlap(missile.posX, missile.posY, width, PLAYER_MISSILE_HEIGHT,
+                               boss.posX, boss.posY, BOSS_WIDTH, BOSS_HEIGHT);
+    }
 
     static bool sameEndpoint(const network::Endpoint& lhs,
                              const network::Endpoint& rhs) {
@@ -281,7 +319,6 @@ namespace rtype::server {
       client.sessionToken = generateSessionToken();
       _clients[netId] = client;
       const ConnectedClient& connected = _clients.at(netId);
-      _forceFullSnapshot = true;
 
       sendConnectAck(connected);
       sendSpawnPlayer(connected, sender);
@@ -415,26 +452,63 @@ namespace rtype::server {
       it->second.lastInputSequence = sequence;
       it->second.hasInputSequence = true;
       it->second.idleTime = 0.0f;
-      it->second.shootPressed = shoot;
 
-      if (it->second.dead) {
-        it->second.velX = 0.f;
-        it->second.velY = 0.f;
-        return;
-      }
+      auto& queue = it->second.pendingInputs;
+      if (queue.size() >= MAX_PENDING_INPUTS) queue.pop_front();
+      queue.push_back({sequence, gameplay::MovementInput{up, down, left, right}, shoot});
+    }
 
-      float speed = 300.0f;
-      it->second.velX = 0.0f;
-      it->second.velY = 0.0f;
-      if (up) it->second.velY -= speed;
-      if (down) it->second.velY += speed;
-      if (left) it->second.velX -= speed;
-      if (right) it->second.velX += speed;
-      const float magnitude = std::hypot(it->second.velX, it->second.velY);
-      if (magnitude > speed) {
-        it->second.velX *= speed / magnitude;
-        it->second.velY *= speed / magnitude;
+    static void processQueuedInputs(ConnectedClient& client) {
+      std::size_t processed = 0;
+      while (!client.pendingInputs.empty() && processed < MAX_INPUTS_PER_TICK) {
+        const QueuedInput input = client.pendingInputs.front();
+        client.pendingInputs.pop_front();
+        client.movement = input.movement;
+        client.shootPressed = input.shoot;
+        const gameplay::MovementVector moved = gameplay::applyMovement(
+          {client.posX, client.posY}, input.movement, gameplay::INPUT_STEP_SECONDS, movementBounds());
+        client.posX = moved.x;
+        client.posY = moved.y;
+        const gameplay::MovementVector velocity = gameplay::movementVelocity(input.movement);
+        client.velX = velocity.x;
+        client.velY = velocity.y;
+        client.lastProcessedInput = input.sequence;
+        client.hasProcessedInput = true;
+        ++processed;
       }
+    }
+
+    static void discardQueuedInputs(ConnectedClient& client) {
+      if (!client.pendingInputs.empty()) {
+        client.lastProcessedInput = client.pendingInputs.back().sequence;
+        client.hasProcessedInput = true;
+        client.pendingInputs.clear();
+      }
+      client.movement = {};
+      client.shootPressed = false;
+      client.velX = 0.0f;
+      client.velY = 0.0f;
+    }
+
+    void sendInputAcks() {
+      for (const auto& [id, client] : _clients) {
+        if (!client.hasProcessedInput) continue;
+        network::PacketStreamWriter payload;
+        payload << client.lastProcessedInput << _simulationTick << client.posX << client.posY;
+        network::PacketHeader header{
+          network::PROTOCOL_MAGIC, network::PacketType::InputAck, _outgoingSeq++,
+          static_cast<std::uint16_t>(payload.getBuffer().size())
+        };
+        network::PacketStreamWriter writer;
+        writer << header;
+        auto packet = writer.getBuffer();
+        packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
+        sendDatagram(packet, client.endpoint, false);
+      }
+    }
+
+    static gameplay::MovementBounds movementBounds() {
+      return gameplay::MovementBounds{WORLD_WIDTH, WORLD_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT};
     }
 
     void handleDisconnect(network::PacketStreamReader& reader,
@@ -450,6 +524,22 @@ namespace rtype::server {
         return;
       }
       removeClient(netId);
+    }
+
+    void handleSnapshotRequest(network::PacketStreamReader& reader,
+                               const network::Endpoint& sender) {
+      network::NetworkId netId{};
+      std::uint64_t sessionToken{};
+      reader >> netId >> sessionToken;
+      auto it = _clients.find(netId);
+      if (it == _clients.end() || !sameEndpoint(it->second.endpoint, sender) ||
+          it->second.sessionToken != sessionToken) {
+        if (_metrics)
+          _metrics->rejectedPackets.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+      it->second.needsFullSnapshot = true;
+      if (_metrics) _metrics->fullSnapshotRequests.fetch_add(1, std::memory_order_relaxed);
     }
 
     void removeClient(network::NetworkId netId) {
@@ -485,8 +575,10 @@ namespace rtype::server {
       _bossActive = false;
       _tickAccumulator = 0.0f;
       _snapshotTick = 0;
+      _simulationTick = 0;
       _forceFullSnapshot = true;
       _previousSnapshot.clear();
+      _hasPreviousSnapshot = false;
     }
 
     void removeTimedOutClients(float dt) {
@@ -499,19 +591,18 @@ namespace rtype::server {
     }
 
     void updateGameLogic(float dt) {
+      ++_simulationTick;
       std::vector<network::NetworkId> clientsToRemove;
       for (auto& [id, client] : _clients) {
         updateAugmentTimers(client, dt);
         client.hitCooldown = std::max(0.0f, client.hitCooldown - dt);
         if (client.dead) {
+          discardQueuedInputs(client);
           client.deathTimer -= dt;
           if (client.deathTimer <= 0.f) clientsToRemove.push_back(id);
           continue;
         }
-        client.posX = std::clamp(client.posX + client.velX * dt,
-                                 0.0f, WORLD_WIDTH - PLAYER_WIDTH);
-        client.posY = std::clamp(client.posY + client.velY * dt,
-                                 0.0f, WORLD_HEIGHT - PLAYER_HEIGHT);
+        processQueuedInputs(client);
         client.shootCooldown = std::max(0.0f, client.shootCooldown - dt);
         if (client.shootPressed && client.shootCooldown <= 0.f) {
           client.shootCooldown = 0.25f;
@@ -819,10 +910,12 @@ namespace rtype::server {
         if (targetId == missile.id || isMarkedDestroyed(destroyed, targetId)) continue;
         if (target.type != ServerEntityType::Bydos &&
             target.type != ServerEntityType::Boss) continue;
-        const float halfWidth = target.type == ServerEntityType::Boss ? 100.0f : 33.0f;
-        const float halfHeight = target.type == ServerEntityType::Boss ? 75.0f : 33.0f;
-        if (std::abs(missile.posX - target.posX) >= halfWidth ||
-            std::abs(missile.posY - target.posY) >= halfHeight) continue;
+        if (target.type == ServerEntityType::Boss) {
+          if (!missileHitsBoss(missile, target)) continue;
+        } else if (std::abs(missile.posX - target.posX) >= 33.0f ||
+                   std::abs(missile.posY - target.posY) >= 33.0f) {
+          continue;
+        }
         destroyed.push_back(missile.id);
         target.hp -= missile.damage;
         broadcastHealthUpdate(targetId, target.hp, target.maxHp);
@@ -866,10 +959,13 @@ namespace rtype::server {
       for (auto& [id, client] : _clients) {
         if (client.dead) continue;
         const bool boss = enemy.type == ServerEntityType::Boss;
-        const float halfWidth = boss ? 100.0f : 33.0f;
-        const float halfHeight = boss ? 75.0f : 25.0f;
-        if (std::abs(enemy.posX - client.posX) >= halfWidth ||
-            std::abs(enemy.posY - client.posY) >= halfHeight) continue;
+        if (boss) {
+          if (!rectanglesOverlap(client.posX, client.posY, PLAYER_WIDTH, PLAYER_HEIGHT,
+                                 enemy.posX, enemy.posY, BOSS_WIDTH, BOSS_HEIGHT)) continue;
+        } else if (std::abs(enemy.posX - client.posX) >= 33.0f ||
+                   std::abs(enemy.posY - client.posY) >= 25.0f) {
+          continue;
+        }
         if (!boss) {
           destroyed.push_back(enemy.id);
           ++_killsThisStage;
@@ -1081,9 +1177,9 @@ namespace rtype::server {
 
     void broadcastGameState() {
       if (_clients.empty()) return;
+      sendInputAcks();
 
-      std::unordered_map<network::NetworkId,
-                         network::PackedEntityStateData> current;
+      network::SnapshotState current;
       current.reserve(_clients.size() + _entities.size());
       for (const auto& [id, client] : _clients) {
         const network::EntityStateData state{
@@ -1099,39 +1195,52 @@ namespace rtype::server {
       }
 
       ++_snapshotTick;
-      const bool fullSnapshot = _forceFullSnapshot ||
+      const bool keyframe = _forceFullSnapshot || !_hasPreviousSnapshot ||
         (_snapshotTick % SNAPSHOT_KEYFRAME_INTERVAL == 0);
-      std::vector<network::PackedEntityStateData> states;
-      states.reserve(current.size());
-      for (const auto& [id, state] : current) {
-        const auto previous = _previousSnapshot.find(id);
-        if (fullSnapshot || previous == _previousSnapshot.end() ||
-            previous->second != state) {
-          states.push_back(state);
-        }
+      const bool someoneNeedsFull = std::any_of(_clients.begin(), _clients.end(),
+        [](const auto& entry) { return entry.second.needsFullSnapshot; });
+      network::PacketData deltaPacket;
+      if (!keyframe) {
+        const network::SnapshotDelta delta =
+          network::makeSnapshotDelta(_previousSnapshot, _previousSnapshotTick, current, _simulationTick);
+        if (delta.changed.empty() && delta.removed.empty() && !someoneNeedsFull) return;
+        network::PacketStreamWriter payload;
+        network::writeSnapshotDelta(payload, delta);
+        deltaPacket = snapshotPacket(network::PacketType::GameStateSyncDelta, payload.getBuffer());
       }
+      network::PacketData fullPacket;
+      if (keyframe || someoneNeedsFull)
+        fullPacket = snapshotPacket(network::PacketType::GameStateSyncPacked, fullSnapshotPayload(current));
+      for (auto& [id, client] : _clients) {
+        const bool full = keyframe || client.needsFullSnapshot;
+        const network::PacketData& packet = full ? fullPacket : deltaPacket;
+        sendDatagram(packet, client.endpoint, false);
+        if (_metrics) _metrics->recordSnapshot(full, packet.size());
+        client.needsFullSnapshot = false;
+      }
+
       _previousSnapshot = std::move(current);
+      _previousSnapshotTick = _simulationTick;
+      _hasPreviousSnapshot = true;
       _forceFullSnapshot = false;
-      if (states.empty() && !fullSnapshot) return;
+    }
 
+    network::PacketData fullSnapshotPayload(const network::SnapshotState& state) const {
       network::PacketStreamWriter payload;
-      payload << static_cast<std::uint16_t>(states.size());
-      for (const auto& state : states) payload << state;
+      payload << _simulationTick << static_cast<std::uint16_t>(state.size());
+      for (const auto& [id, packed] : state) payload << packed;
+      return payload.getBuffer();
+    }
 
-      const auto packetType = fullSnapshot
-        ? network::PacketType::GameStateSyncPacked
-        : network::PacketType::GameStateSyncDelta;
+    network::PacketData snapshotPacket(network::PacketType type, const network::PacketData& payload) {
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, packetType, _outgoingSeq++,
-        static_cast<std::uint16_t>(payload.getBuffer().size())
+        network::PROTOCOL_MAGIC, type, _outgoingSeq++, static_cast<std::uint16_t>(payload.size())
       };
       network::PacketStreamWriter writer;
       writer << header;
       auto packet = writer.getBuffer();
-      packet.insert(packet.end(), payload.getBuffer().begin(),
-                    payload.getBuffer().end());
-      for (const auto& [id, client] : _clients)
-        sendDatagram(packet, client.endpoint, false);
+      packet.insert(packet.end(), payload.begin(), payload.end());
+      return packet;
     }
 
     void sendDatagram(const network::PacketData& packet,
@@ -1174,9 +1283,11 @@ namespace rtype::server {
     float _tickAccumulator{0.0f};
     double _droppedSimulationSeconds{0.0};
     std::uint64_t _snapshotTick{0};
+    std::uint32_t _simulationTick{0};
     bool _forceFullSnapshot{true};
-    std::unordered_map<network::NetworkId,
-                       network::PackedEntityStateData> _previousSnapshot;
+    network::SnapshotState _previousSnapshot;
+    std::uint32_t _previousSnapshotTick{0};
+    bool _hasPreviousSnapshot{false};
     float _bydoSpawnTimer{0.f};
     float _enemyShootTimer{0.f};
     float _bossShootTimer{0.f};

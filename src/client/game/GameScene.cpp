@@ -11,12 +11,14 @@
 #include "engine/scene/SceneManager.hpp"
 #include "engine/systems/AnimationSystem.hpp"
 #include "engine/systems/InterpolationSystem.hpp"
+#include "engine/systems/SnapshotInterpolationSystem.hpp"
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
 #include "exception.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -37,6 +39,8 @@ namespace rtype::game {
     constexpr const char* SECTION_ENTITY_TYPES = "entity_types";
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
+    constexpr const char* DEBUG_LINE_NETWORK = "network";
+    constexpr int MAX_INPUT_STEPS_PER_FRAME = 4;
     constexpr const char* SESSION_NET_ID = "player_net_id";
 
     unsigned short readPort(const engine::Config& config) {
@@ -60,14 +64,30 @@ namespace rtype::game {
       _firstPlayerId(static_cast<network::NetworkId>(std::max(0, context.config.getInt(SECTION_GAME, "first_player_id", 1)))),
       _playerZ(context.config.getInt(SECTION_GAME, "player_z", 10)),
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
+      _snapshotBufferSize(static_cast<std::size_t>(std::max(2, context.config.getInt(SECTION_NETWORK, "snapshot_buffer_size", 32)))),
+      _networkDebugText(context.config.getString(SECTION_NETWORK, "debug_text")),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
       _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
-      _screenSize{static_cast<float>(context.config.getInt("window", "width", 1920)),
-                  static_cast<float>(context.config.getInt("window", "height", 1080))} {
+      _predictionEnabled(context.config.getBool(SECTION_NETWORK, "prediction", true)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
+    const float tickRate = context.config.getFloat(SECTION_NETWORK, "server_tick_rate", 60.0f);
+    const float delayMs = context.config.getFloat(SECTION_NETWORK, "interpolation_delay_ms", 100.0f);
+    const float extrapolationMs = context.config.getFloat(SECTION_NETWORK, "max_extrapolation_ms", 100.0f);
+    if (tickRate <= 0.0f) throw RtypeError("[network] server_tick_rate must be > 0");
+    if (delayMs < 0.0f || extrapolationMs < 0.0f)
+      throw RtypeError("[network] interpolation_delay_ms and max_extrapolation_ms must be >= 0");
+    _snapshotClock.configure(tickRate, delayMs / 1000.0f, extrapolationMs / 1000.0f);
+    _inputStep = 1.0f / tickRate;
+    client::LocalPrediction::Settings prediction;
+    prediction.correctionSpeed = context.config.getFloat(SECTION_NETWORK, "prediction_correction_speed", prediction.correctionSpeed);
+    prediction.snapDistance = context.config.getFloat(SECTION_NETWORK, "prediction_snap_distance", prediction.snapDistance);
+    prediction.maxPendingInputs = static_cast<std::size_t>(std::max(1, context.config.getInt(
+      SECTION_NETWORK, "prediction_max_pending_inputs", static_cast<int>(prediction.maxPendingInputs))));
+    _prediction.configure(prediction);
+    _network.setSnapshotBufferSize(_snapshotBufferSize);
     _catalog.load(context.config, SECTION_ENTITY_TYPES);
     _augments.load(context.config, SECTION_AUGMENTS);
     _skins.load(context.config, "skins");
@@ -115,6 +135,7 @@ namespace rtype::game {
 
   GameScene::~GameScene() {
     _network.disconnect();
+    _context.debug.lines.erase(DEBUG_LINE_NETWORK);
   }
 
   void GameScene::exit() {
@@ -134,6 +155,8 @@ namespace rtype::game {
     addSystem<engine::MovementSystem>();
     addSystem<engine::ParallaxSystem>(_context.window);
     addSystem<engine::InterpolationSystem>();
+    addSystem<engine::SnapshotInterpolationSystem>(_snapshotClock);
+    _network.setSnapshotClock(&_snapshotClock);
 
     StarfieldSpawner starfield(_registry, _factory);
     starfield.spawn(StarfieldSpawner::loadSettings(_context.config, SECTION_STARFIELD), _context.window.getSize());
@@ -160,6 +183,9 @@ namespace rtype::game {
                                         network::ext::AugmentId augment, int level, float remaining) {
       onAugmentChanged(entity, netId, augment, level, remaining);
     });
+    _network.setOnInputAck([this](const client::ClientNetworkManager::InputAck& ack) {
+      _prediction.reconcile(ack.lastInput, {ack.x, ack.y});
+    });
     _network.setOnScoreChanged([this](network::NetworkId netId, std::uint32_t score) {
       if (netId == _network.getLocalNetId()) _hud.setScore(score);
     });
@@ -179,44 +205,78 @@ namespace rtype::game {
       _context.scenes.changeScene(_menuScene);
       return;
     }
-    sendInputs();
+    sendFixedStepInputs(dt);
+    _snapshotClock.advance(dt);
     _network.update(dt);
-    keepLocalShipOnScreen();
+    applyLocalPrediction(dt);
     _hud.update(dt);
     updateConnectionStatus(dt);
+    updateNetworkDebugLine(dt);
+  }
+
+  void GameScene::updateNetworkDebugLine(float dt) {
+    _snapshotRateElapsed += std::max(dt, 0.0f);
+    if (_snapshotRateElapsed >= 1.0f) {
+      const std::size_t bytes = _network.getSnapshotBytesReceived();
+      _snapshotKiBPerSecond = static_cast<double>(bytes - _snapshotBytesAtSample) / _snapshotRateElapsed / 1024.0;
+      _snapshotBytesAtSample = bytes;
+      _snapshotRateElapsed = 0.0f;
+    }
+    if (!_context.debug.overlayVisible || _networkDebugText.empty()) return;
+    std::size_t remote = 0;
+    std::size_t buffered = 0;
+    _registry.each<engine::SnapshotBufferComponent>([&](engine::Entity, engine::SnapshotBufferComponent& buffer) {
+      ++remote;
+      buffered += buffer.samples.size();
+    });
+    const auto tick = _network.getLastSnapshotTick();
+    _context.debug.lines[DEBUG_LINE_NETWORK] = engine::formatTemplate(_networkDebugText, {
+      {"tick", tick ? std::to_string(*tick) : std::string("-")},
+      {"delay", std::to_string(std::lround(_snapshotClock.delaySeconds() * 1000.0))},
+      {"buffer", std::to_string(remote ? buffered / remote : 0)},
+      {"capacity", std::to_string(_snapshotBufferSize)},
+      {"late", std::to_string(_network.getLateSnapshotCount())},
+      {"remote", std::to_string(remote)},
+      {"pending", std::to_string(_prediction.pendingCount())},
+      {"correction", std::to_string(std::lround(_prediction.lastCorrection()))},
+      {"snapshots", std::to_string(std::lround(_snapshotKiBPerSecond * 10.0) / 10) + "." +
+                    std::to_string(std::lround(_snapshotKiBPerSecond * 10.0) % 10)},
+      {"full", std::to_string(_network.getFullSnapshotCount())},
+      {"delta", std::to_string(_network.getDeltaSnapshotCount())},
+      {"requests", std::to_string(_network.getFullSnapshotRequestCount())},
+    });
+  }
+
+  void GameScene::sendFixedStepInputs(float dt) {
+    const float backlog = _inputStep * static_cast<float>(MAX_INPUT_STEPS_PER_FRAME);
+    _inputAccumulator = std::min(_inputAccumulator + std::max(dt, 0.0f), backlog);
+    while (_inputAccumulator >= _inputStep) {
+      _inputAccumulator -= _inputStep;
+      sendInputs();
+    }
   }
 
   void GameScene::sendInputs() {
-    if (_localDead) {
-      _network.sendInputs(false, false, false, false, false);
-      return;
-    }
     const engine::ActionMap& actions = _context.actions;
-    bool up = actions.isActive(ACTION_UP);
-    bool down = actions.isActive(ACTION_DOWN);
-    bool left = actions.isActive(ACTION_LEFT);
-    bool right = actions.isActive(ACTION_RIGHT);
-    // the server does not bound movement: drop any input pushing the ship past a screen edge
-    if (const auto* transform = _localShip ? _registry.getComponent<engine::TransformComponent>(*_localShip) : nullptr) {
-      const engine::Vector2f& pos = transform->targetPosition;
-      if (pos.x <= 0.0f) left = false;
-      if (pos.y <= 0.0f) up = false;
-      if (pos.x + _localShipSize.x >= _screenSize.x) right = false;
-      if (pos.y + _localShipSize.y >= _screenSize.y) down = false;
+    gameplay::MovementInput movement;
+    bool shoot = false;
+    if (!_localDead) {
+      movement = {actions.isActive(ACTION_UP), actions.isActive(ACTION_DOWN),
+                  actions.isActive(ACTION_LEFT), actions.isActive(ACTION_RIGHT)};
+      shoot = actions.isActive(ACTION_SHOOT);
     }
-    _network.sendInputs(up, down, left, right, actions.isActive(ACTION_SHOOT));
+    const auto sequence = _network.sendInputs(movement.up, movement.down, movement.left, movement.right, shoot);
+    if (sequence) _prediction.applyInput(*sequence, movement);
   }
 
-  void GameScene::keepLocalShipOnScreen() {
-    if (!_localShip) return;
+  void GameScene::applyLocalPrediction(float dt) {
+    _prediction.update(dt);
+    if (!_prediction.active() || !_localShip) return;
     auto* transform = _registry.getComponent<engine::TransformComponent>(*_localShip);
     if (!transform) return;
-    const float maxX = std::max(0.0f, _screenSize.x - _localShipSize.x);
-    const float maxY = std::max(0.0f, _screenSize.y - _localShipSize.y);
-    for (engine::Vector2f* pos : {&transform->position, &transform->targetPosition}) {
-      pos->x = std::clamp(pos->x, 0.0f, maxX);
-      pos->y = std::clamp(pos->y, 0.0f, maxY);
-    }
+    const gameplay::MovementVector shown = _prediction.displayed();
+    transform->position = {shown.x, shown.y};
+    transform->targetPosition = transform->position;
   }
 
   void GameScene::updateConnectionStatus(float dt) {
@@ -317,6 +377,7 @@ namespace rtype::game {
 
   void GameScene::onLocalPlayerDestroyed() {
     _localDead = true;
+    _prediction.stop();
     _hud.clearAugments();
     playSound("player_death_sound");
     playSound("game_over_sound");
@@ -414,13 +475,9 @@ namespace rtype::game {
     const std::string asset = playerAssetFor(netId);
     _factory.attachSprite(entity, asset, _playerZ);
     if (isLocal) {
-      const engine::IntRect rect = _context.resources.createSprite(asset)->getTextureRect();
-      const engine::Vector2f scale = _context.resources.get(asset, engine::AssetType::Texture).scale;
-      const auto* transform = _registry.getComponent<engine::TransformComponent>(entity);
-      const engine::Vector2f entityScale = transform ? transform->scale : engine::Vector2f{1.0f, 1.0f};
       _localShip = entity;
-      _localShipSize = {static_cast<float>(rect.width) * scale.x * entityScale.x,
-                        static_cast<float>(rect.height) * scale.y * entityScale.y};
+      const auto* transform = _registry.getComponent<engine::TransformComponent>(entity);
+      if (_predictionEnabled && transform) _prediction.reset({transform->position.x, transform->position.y});
     }
     addPlayerTag(entity, netId);
 

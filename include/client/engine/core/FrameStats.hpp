@@ -1,6 +1,9 @@
 #ifndef RTYPE_ENGINE_FRAMESTATS_HPP
 #define RTYPE_ENGINE_FRAMESTATS_HPP
 
+#include <map>
+#include <string>
+
 namespace rtype::engine {
   struct FrameStats {
     float fps{0.0f};
@@ -9,6 +12,7 @@ namespace rtype::engine {
 
   struct DebugState {
     bool overlayVisible{false};
+    std::map<std::string, std::string> lines;
   };
 }
 

@@ -49,7 +49,6 @@ namespace rtype::engine {
     ResourceManager _resources;
     AudioService _audio;
     ActionMap _actions;
-    SceneManager _sceneManager;
     Clock _clock;
     Color _clearColor;
     std::string _quitAction;
@@ -58,6 +57,7 @@ namespace rtype::engine {
     FrameStats _stats;
     DebugState _debug;
     Session _session;
+    SceneManager _sceneManager;
     float _statsElapsed{0.0f};
     int _statsFrames{0};
     EngineContext _context;

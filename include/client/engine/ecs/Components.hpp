@@ -2,9 +2,11 @@
 #define RTYPE_ENGINE_COMPONENTS_HPP
 
 #include "engine/gfx/GfxTypes.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace rtype::engine {
   struct TransformComponent {
@@ -87,6 +89,18 @@ namespace rtype::engine {
 
   struct InterpolationComponent {
     float speed{15.0f};
+  };
+
+  struct SnapshotSample {
+    std::uint32_t tick{0};
+    Vector2f position{0.0f, 0.0f};
+    Vector2f velocity{0.0f, 0.0f};
+  };
+
+  struct SnapshotBufferComponent {
+    std::vector<SnapshotSample> samples;
+    std::size_t capacity{32};
+    bool revealed{false};
   };
 
   struct NetworkIdComponent {

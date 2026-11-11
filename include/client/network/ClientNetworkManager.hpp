@@ -1,12 +1,15 @@
 #ifndef CLIENTNETWORKMANAGER_HPP
 #define CLIENTNETWORKMANAGER_HPP
 
+#include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/Components.hpp"
 #include "engine/ecs/Registry.hpp"
+#include "engine/ecs/SnapshotBuffer.hpp"
 #include "exception.hpp"
 #include "network/INetworkSocket.hpp"
 #include "network/PacketStream.hpp"
 #include "network/Protocol.hpp"
+#include "network/SnapshotDelta.hpp"
 #include "network/ProtocolExtension.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -33,6 +36,14 @@ namespace rtype::client {
                                                network::ext::AugmentId, int, float)>;
     using ScoreCallback = std::function<void(network::NetworkId, std::uint32_t)>;
 
+    struct InputAck {
+      std::uint32_t lastInput{0};
+      std::uint32_t tick{0};
+      float x{0.0f};
+      float y{0.0f};
+    };
+    using InputAckCallback = std::function<void(const InputAck&)>;
+
     ClientNetworkManager(network::INetworkSocket& socket, engine::Registry& registry)
       : _socket(socket), _registry(registry) {}
 
@@ -43,6 +54,7 @@ namespace rtype::client {
     void setOnHealthChanged(HealthCallback callback) { _onHealth = std::move(callback); }
     void setOnAugmentChanged(AugmentCallback callback) { _onAugment = std::move(callback); }
     void setOnScoreChanged(ScoreCallback callback) { _onScore = std::move(callback); }
+    void setOnInputAck(InputAckCallback callback) { _onInputAck = std::move(callback); }
 
     static constexpr std::uint8_t NO_PREFERENCE = 0xFF;
 
@@ -78,6 +90,12 @@ namespace rtype::client {
       _lastAugmentSequences.clear();
       _lastScoreSequences.clear();
       _hasSyncSequence = false;
+      _hasSnapshotTick = false;
+      _hasInputAck = false;
+      _snapshotHistory.clear();
+      _pendingDeltas.clear();
+      _fullRequestCooldown = 0.0f;
+      _awaitingFullSnapshot = false;
     }
 
     void update(float dt) {
@@ -91,13 +109,16 @@ namespace rtype::client {
         }
       }
       processIncomingPackets();
+      flushPendingDestroys(dt);
+      updatePendingDeltas(dt);
     }
 
-    void sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
-      if (!_isConnected) return;
+    std::optional<std::uint32_t> sendInputs(bool up, bool down, bool left, bool right, bool shoot) {
+      if (!_isConnected) return std::nullopt;
 
+      const std::uint32_t inputSequence = _outgoingSeq++;
       network::PacketHeader header{
-        network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, _outgoingSeq++, 0
+        network::PROTOCOL_MAGIC, network::PacketType::PlayerInput, inputSequence, 0
       };
 
       network::PacketStreamWriter payload;
@@ -117,6 +138,7 @@ namespace rtype::client {
       packet.insert(packet.end(), payload.getBuffer().begin(), payload.getBuffer().end());
 
       _socket.send(packet, _serverEndpoint);
+      return inputSequence;
     }
 
     void disconnect() {
@@ -135,6 +157,23 @@ namespace rtype::client {
 
     [[nodiscard]] bool isConnected() const { return _isConnected; }
     [[nodiscard]] network::NetworkId getLocalNetId() const { return _localNetId; }
+    void setSnapshotClock(engine::SnapshotClock* clock) { _snapshotClock = clock; }
+
+    void setSnapshotBufferSize(std::size_t size) {
+      _snapshotBufferSize = std::max(size, engine::MIN_SNAPSHOT_BUFFER_CAPACITY);
+    }
+
+    [[nodiscard]] std::size_t getLateSnapshotCount() const { return _lateSnapshots; }
+    [[nodiscard]] std::size_t getUnknownBaseDeltaCount() const { return _unknownBaseDeltas; }
+    [[nodiscard]] std::size_t getFullSnapshotRequestCount() const { return _fullSnapshotRequests; }
+    [[nodiscard]] std::size_t getFullSnapshotCount() const { return _fullSnapshotsReceived; }
+    [[nodiscard]] std::size_t getDeltaSnapshotCount() const { return _deltaSnapshotsReceived; }
+    [[nodiscard]] std::size_t getSnapshotBytesReceived() const { return _snapshotBytesReceived; }
+
+    [[nodiscard]] std::optional<std::uint32_t> getLastSnapshotTick() const {
+      if (!_hasSnapshotTick) return std::nullopt;
+      return _lastSnapshotTick;
+    }
     [[nodiscard]] std::optional<std::uint8_t> getServerDifficulty() const { return _serverDifficulty; }
     [[nodiscard]] std::optional<std::uint8_t> getPlayerSkin(network::NetworkId netId) const {
       auto it = _playerSkins.find(netId);
@@ -148,6 +187,16 @@ namespace rtype::client {
       engine::Entity entity;
       network::ext::EntityType type;
     };
+
+    struct PendingDestroy {
+      engine::Entity entity;
+      network::NetworkId netId;
+      network::ext::EntityType type;
+      std::uint32_t tick;
+      float waited;
+    };
+
+    static constexpr float MAX_DEFERRED_DESTROY_SECONDS = 1.0f;
 
     struct PendingHealth {
       int health{0};
@@ -213,8 +262,8 @@ namespace rtype::client {
         header.type == network::PacketType::GameStateSync ||
         header.type == network::PacketType::GameStateSyncPacked ||
         header.type == network::PacketType::GameStateSyncDelta;
-      if (isSync && !isSequenceNewer(header.sequence, _lastSyncSeq,
-                                     _hasSyncSequence)) return;
+      const bool staleSync = isSync && !isSequenceNewer(header.sequence, _lastSyncSeq, _hasSyncSequence);
+      if (staleSync && header.type == network::PacketType::GameStateSync) return;
 
       if (header.type == network::ext::SPAWN_ENTITY) {
         network::NetworkId netId;
@@ -255,6 +304,15 @@ namespace rtype::client {
               augment, level, remaining, header.sequence};
           }
         }
+        return;
+      }
+      if (header.type == network::PacketType::InputAck) {
+        InputAck ack;
+        reader >> ack.lastInput >> ack.tick >> ack.x >> ack.y;
+        if (!_isConnected || !isSequenceNewer(ack.lastInput, _lastInputAck, _hasInputAck)) return;
+        _lastInputAck = ack.lastInput;
+        _hasInputAck = true;
+        if (_onInputAck) _onInputAck(ack);
         return;
       }
       if (header.type == network::ext::SCORE_UPDATE) {
@@ -314,38 +372,162 @@ namespace rtype::client {
           destroyEntity(netId, header.sequence);
           break;
         }
-        case network::PacketType::GameStateSync:
-        case network::PacketType::GameStateSyncPacked:
-        case network::PacketType::GameStateSyncDelta: {
+        case network::PacketType::GameStateSync: {
           std::uint16_t count{};
           reader >> count;
-          constexpr std::uint16_t MAX_SNAPSHOT_COUNT = 256;
           if (count > MAX_SNAPSHOT_COUNT) return;
-          const std::size_t stateSize =
-            header.type == network::PacketType::GameStateSync
-              ? sizeof(network::EntityStateData)
-              : sizeof(network::PackedEntityStateData);
-          if (reader.remaining() != static_cast<std::size_t>(count) * stateSize)
-            return;
-          _snapshot.clear();
-          _snapshot.reserve(count);
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::EntityStateData)) return;
           for (std::uint16_t i = 0; i < count; ++i) {
             network::EntityStateData state{};
-            if (header.type != network::PacketType::GameStateSync) {
-              network::PackedEntityStateData packed{};
-              reader >> packed;
-              state = network::unpackEntityState(packed);
-            } else {
-              reader >> state;
-            }
-            _snapshot.push_back(state);
+            reader >> state;
+            if (!staleSync) updateEntityState(state);
           }
-          for (const auto& state : _snapshot) updateEntityState(state);
+          if (staleSync) break;
           _lastSyncSeq = header.sequence;
           _hasSyncSequence = true;
           break;
         }
+        case network::PacketType::GameStateSyncPacked: {
+          std::uint32_t tick{0};
+          std::uint16_t count{};
+          reader >> tick >> count;
+          if (count > MAX_SNAPSHOT_COUNT) return;
+          if (reader.remaining() != static_cast<std::size_t>(count) * sizeof(network::PackedEntityStateData)) return;
+          network::SnapshotState state;
+          state.reserve(count);
+          for (std::uint16_t i = 0; i < count; ++i) {
+            network::PackedEntityStateData packed{};
+            reader >> packed;
+            state[packed.netId] = packed;
+          }
+          _awaitingFullSnapshot = false;
+          ++_fullSnapshotsReceived;
+          _snapshotBytesReceived += data.size();
+          acceptSnapshot(tick, std::move(state));
+          break;
+        }
+        case network::PacketType::GameStateSyncDelta:
+          handleSnapshotDelta(network::readSnapshotDelta(reader, MAX_SNAPSHOT_COUNT));
+          ++_deltaSnapshotsReceived;
+          _snapshotBytesReceived += data.size();
+          break;
         default: break;
+      }
+    }
+
+    static constexpr std::size_t MAX_SNAPSHOT_COUNT = 256;
+    static constexpr std::size_t MAX_SNAPSHOT_HISTORY = 64;
+    static constexpr std::size_t MAX_PENDING_DELTAS = 16;
+    static constexpr float PENDING_DELTA_TIMEOUT = 0.1f;
+    static constexpr float FULL_REQUEST_INTERVAL = 0.25f;
+
+    struct PendingDelta {
+      network::SnapshotDelta delta;
+      float waited;
+    };
+
+    void acceptSnapshot(std::uint32_t tick, network::SnapshotState state) {
+      const bool late = _hasSnapshotTick && tick <= _lastSnapshotTick;
+      for (const auto& [id, packed] : state) {
+        const network::EntityStateData entity = network::unpackEntityState(packed);
+        recordSnapshotSample(entity, tick);
+        if (!late) updateEntityState(entity);
+      }
+      if (_snapshotClock) _snapshotClock->observe(tick);
+      if (late) {
+        ++_lateSnapshots;
+      } else {
+        _lastSnapshotTick = tick;
+        _hasSnapshotTick = true;
+      }
+      storeSnapshot(tick, std::move(state));
+      resolvePendingDeltas();
+    }
+
+    void handleSnapshotDelta(const network::SnapshotDelta& delta) {
+      if (findSnapshot(delta.tick)) return;
+      const network::SnapshotState* base = findSnapshot(delta.baseTick);
+      if (!base) {
+        ++_unknownBaseDeltas;
+        if (_pendingDeltas.size() >= MAX_PENDING_DELTAS) {
+          _pendingDeltas.clear();
+          _awaitingFullSnapshot = true;
+          requestFullSnapshot();
+        }
+        _pendingDeltas.push_back({delta, 0.0f});
+        return;
+      }
+      acceptSnapshot(delta.tick, network::applySnapshotDelta(*base, delta));
+      resolvePendingDeltas();
+    }
+
+    void resolvePendingDeltas() {
+      bool progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (auto pending = _pendingDeltas.begin(); pending != _pendingDeltas.end(); ++pending) {
+          if (findSnapshot(pending->delta.tick)) {
+            _pendingDeltas.erase(pending);
+            progressed = true;
+            break;
+          }
+          const network::SnapshotState* base = findSnapshot(pending->delta.baseTick);
+          if (!base) continue;
+          const network::SnapshotDelta delta = pending->delta;
+          _pendingDeltas.erase(pending);
+          acceptSnapshot(delta.tick, network::applySnapshotDelta(*base, delta));
+          progressed = true;
+          break;
+        }
+      }
+    }
+
+    void updatePendingDeltas(float dt) {
+      const float elapsed = std::max(dt, 0.0f);
+      _fullRequestCooldown = std::max(0.0f, _fullRequestCooldown - elapsed);
+      bool expired = false;
+      for (auto& pending : _pendingDeltas) {
+        pending.waited += elapsed;
+        if (pending.waited >= PENDING_DELTA_TIMEOUT) expired = true;
+      }
+      if (expired) {
+        _pendingDeltas.clear();
+        _awaitingFullSnapshot = true;
+      }
+      if (_awaitingFullSnapshot) requestFullSnapshot();
+    }
+
+    void requestFullSnapshot() {
+      if (!_isConnected || _fullRequestCooldown > 0.0f) return;
+      network::PacketHeader header{
+        network::PROTOCOL_MAGIC, network::PacketType::SnapshotRequest, _outgoingSeq++,
+        static_cast<std::uint16_t>(sizeof(_localNetId) + sizeof(_sessionToken))
+      };
+      network::PacketStreamWriter writer;
+      writer << header << _localNetId << _sessionToken;
+      _socket.send(writer.getBuffer(), _serverEndpoint);
+      _fullRequestCooldown = FULL_REQUEST_INTERVAL;
+      ++_fullSnapshotRequests;
+    }
+
+    const network::SnapshotState* findSnapshot(std::uint32_t tick) const {
+      for (const auto& [storedTick, state] : _snapshotHistory)
+        if (storedTick == tick) return &state;
+      return nullptr;
+    }
+
+    void storeSnapshot(std::uint32_t tick, network::SnapshotState state) {
+      for (auto& [storedTick, stored] : _snapshotHistory) {
+        if (storedTick == tick) {
+          stored = std::move(state);
+          return;
+        }
+      }
+      _snapshotHistory.emplace_back(tick, std::move(state));
+      while (_snapshotHistory.size() > MAX_SNAPSHOT_HISTORY) {
+        auto oldest = std::min_element(_snapshotHistory.begin(), _snapshotHistory.end(),
+                                       [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        _snapshotHistory.erase(oldest);
       }
     }
 
@@ -424,6 +606,7 @@ namespace rtype::client {
         entity, {{x, y}, 0.0f, {1.0f, 1.0f}, {x, y}});
       _registry.addComponent<engine::VelocityComponent>(entity, {{0.0f, 0.0f}});
       _registry.addComponent<engine::NetworkIdComponent>(entity, {netId, isLocal});
+      if (!isLocal) _registry.addComponent(entity, engine::SnapshotBufferComponent{{}, _snapshotBufferSize});
       _networkToEcs[netId] = RemoteEntity{entity, type};
       if (_onSpawn) _onSpawn(entity, netId, type, isLocal);
 
@@ -454,9 +637,12 @@ namespace rtype::client {
     void destroyEntity(network::NetworkId netId, std::uint32_t sequence) {
       auto it = _networkToEcs.find(netId);
       if (it != _networkToEcs.end()) {
-        if (_onDestroy) _onDestroy(it->second.entity, netId, it->second.type);
-        _registry.destroyEntity(it->second.entity);
+        const RemoteEntity removed = it->second;
         _networkToEcs.erase(it);
+        if (shouldDeferDestroy(removed.entity))
+          _pendingDestroys.push_back({removed.entity, netId, removed.type, _lastSnapshotTick + 1, 0.0f});
+        else
+          finishDestroy(removed.entity, netId, removed.type);
       }
       _playerSkins.erase(netId);
       _pendingHealth.erase(netId);
@@ -503,6 +689,42 @@ namespace rtype::client {
         _onHealth(entity, netId, it->second.type, health, maxHealth, previous);
     }
 
+    bool shouldDeferDestroy(engine::Entity entity) const {
+      return _snapshotClock && _snapshotClock->isSynchronized() && _hasSnapshotTick &&
+             _registry.getComponent<engine::SnapshotBufferComponent>(entity) != nullptr;
+    }
+
+    void finishDestroy(engine::Entity entity, network::NetworkId netId, network::ext::EntityType type) {
+      if (_onDestroy) _onDestroy(entity, netId, type);
+      _registry.destroyEntity(entity);
+    }
+
+    void flushPendingDestroys(float dt) {
+      if (_pendingDestroys.empty()) return;
+      const bool synchronized = _snapshotClock && _snapshotClock->isSynchronized();
+      const auto renderTick = _snapshotClock ? _snapshotClock->currentRenderTick() : std::nullopt;
+      std::vector<PendingDestroy> ready;
+      for (auto pending = _pendingDestroys.begin(); pending != _pendingDestroys.end();) {
+        pending->waited += std::max(dt, 0.0f);
+        const bool reached = renderTick && *renderTick >= static_cast<double>(pending->tick);
+        if (!synchronized || reached || pending->waited >= MAX_DEFERRED_DESTROY_SECONDS) {
+          ready.push_back(*pending);
+          pending = _pendingDestroys.erase(pending);
+        } else {
+          ++pending;
+        }
+      }
+      for (const auto& entry : ready) finishDestroy(entry.entity, entry.netId, entry.type);
+    }
+
+    void recordSnapshotSample(const network::EntityStateData& state, std::uint32_t tick) {
+      auto it = _networkToEcs.find(state.netId);
+      if (it == _networkToEcs.end()) return;
+      auto* buffer = _registry.getComponent<engine::SnapshotBufferComponent>(it->second.entity);
+      if (!buffer) return;
+      engine::pushSnapshotSample(*buffer, {tick, {state.posX, state.posY}, {state.velX, state.velY}});
+    }
+
     void updateEntityState(const network::EntityStateData& state) {
       auto it = _networkToEcs.find(state.netId);
       if (it == _networkToEcs.end()) return;
@@ -518,6 +740,9 @@ namespace rtype::client {
     HealthCallback _onHealth;
     AugmentCallback _onAugment;
     ScoreCallback _onScore;
+    InputAckCallback _onInputAck;
+    std::uint32_t _lastInputAck{0};
+    bool _hasInputAck{false};
     network::Endpoint _serverEndpoint;
     std::unordered_map<network::NetworkId, RemoteEntity> _networkToEcs;
     std::unordered_map<network::NetworkId, PendingHealth> _pendingHealth;
@@ -527,7 +752,6 @@ namespace rtype::client {
     std::unordered_map<network::NetworkId, std::uint32_t> _lastScoreSequences;
     std::unordered_map<network::NetworkId, std::uint32_t> _destroyedEntities;
     std::vector<PendingPlayerSpawn> _pendingPlayerSpawns;
-    std::vector<network::EntityStateData> _snapshot;
 
     network::NetworkId _localNetId{0};
     std::uint64_t _sessionToken{0};
@@ -537,6 +761,21 @@ namespace rtype::client {
     std::uint32_t _outgoingSeq{1};
     std::uint32_t _lastSyncSeq{0};
     bool _hasSyncSequence{false};
+    std::uint32_t _lastSnapshotTick{0};
+    bool _hasSnapshotTick{false};
+    std::size_t _snapshotBufferSize{32};
+    engine::SnapshotClock* _snapshotClock{nullptr};
+    std::vector<PendingDestroy> _pendingDestroys;
+    std::size_t _lateSnapshots{0};
+    std::size_t _unknownBaseDeltas{0};
+    std::size_t _fullSnapshotRequests{0};
+    std::size_t _fullSnapshotsReceived{0};
+    std::size_t _deltaSnapshotsReceived{0};
+    std::size_t _snapshotBytesReceived{0};
+    float _fullRequestCooldown{0.0f};
+    bool _awaitingFullSnapshot{false};
+    std::vector<PendingDelta> _pendingDeltas;
+    std::deque<std::pair<std::uint32_t, network::SnapshotState>> _snapshotHistory;
     std::unordered_set<std::uint32_t> _receivedReliable;
     std::deque<std::uint32_t> _receivedReliableOrder;
     std::size_t _droppedPackets{0};

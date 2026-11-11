@@ -1,4 +1,5 @@
 #include "ServerNetworkManager.hpp"
+#include "network/SnapshotDelta.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -91,8 +92,9 @@ static std::uint16_t snapshotEntityCount(
     const MockSocket::SentPacket& sent) {
   network::PacketStreamReader reader(sent.data);
   network::PacketHeader header{};
+  std::uint32_t tick{};
   std::uint16_t count{};
-  reader >> header >> count;
+  reader >> header >> tick >> count;
   return count;
 }
 
@@ -402,11 +404,11 @@ static void testNonBooleanInputBytesAreRejected() {
   assert(stopped != socket.sent.end());
   network::PacketStreamReader stoppedReader(stopped->data);
   network::PacketHeader stoppedHeader{};
-  std::uint16_t stoppedCount{};
-  network::PackedEntityStateData stoppedState{};
-  stoppedReader >> stoppedHeader >> stoppedCount >> stoppedState;
-  assert(stoppedCount == 1);
-  assert(network::unpackEntityState(stoppedState).velX == 0.0f);
+  stoppedReader >> stoppedHeader;
+  const auto stoppedDelta = network::readSnapshotDelta(stoppedReader, 64);
+  assert(stoppedDelta.changed.size() == 1);
+  assert((stoppedDelta.changed.front().mask & network::DELTA_VEL_X) != 0);
+  assert(network::unpackEntityState(stoppedDelta.changed.front().state).velX == 0.0f);
 
   network::PacketStreamWriter invalidPayload;
   invalidPayload << connected.playerId << connected.sessionToken
@@ -554,6 +556,29 @@ static void testUnknownRoomIsRejected() {
   assert(roomStatus(socket.sent.front()) == 1);
 }
 
+static void testSnapshotRequestIsRoutedToTheRoom() {
+  MockSocket socket;
+  server::ServerNetworkManager manager(socket);
+  const network::Endpoint client{"127.0.0.1", 5266};
+  socket.enqueue(packet(network::PacketType::ConnectReq), client);
+  manager.update(0.016f);
+  auto ack = std::find_if(socket.sent.begin(), socket.sent.end(), [](const auto& sent) {
+    return packetType(sent) == network::PacketType::ConnectAck;
+  });
+  assert(ack != socket.sent.end());
+  const auto connected = connectInfo(*ack);
+  manager.update(0.034f);
+
+  network::PacketStreamWriter request;
+  request << connected.playerId << connected.sessionToken;
+  socket.clearSent();
+  socket.enqueue(packet(network::PacketType::SnapshotRequest, request.getBuffer(), 2), client);
+  manager.update(0.034f);
+  assert(std::any_of(socket.sent.begin(), socket.sent.end(), [&](const auto& sent) {
+    return packetType(sent) == network::PacketType::GameStateSyncPacked && sent.endpoint.port == client.port;
+  }));
+}
+
 int main() {
   testDefaultRoomCompatibility();
   testCreateListAndJoinRooms();
@@ -568,6 +593,7 @@ int main() {
   testReceiveThreadDoesNotOwnSimulationState();
   testServerReliableAcknowledgementFlow();
   testUnknownRoomIsRejected();
+  testSnapshotRequestIsRoutedToTheRoom();
   std::cout << "server room tests passed\n";
   return 0;
 }

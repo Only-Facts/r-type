@@ -2,6 +2,7 @@
 #define RTYPE_GAME_GAMESCENE_HPP
 
 #include "engine/core/EngineContext.hpp"
+#include "engine/core/SnapshotClock.hpp"
 #include "engine/ecs/Components.hpp"
 #include "engine/scene/AScene.hpp"
 #include "game/AugmentCatalog.hpp"
@@ -10,6 +11,7 @@
 #include "game/Hud.hpp"
 #include "game/SkinCatalog.hpp"
 #include "network/ClientNetworkManager.hpp"
+#include "network/LocalPrediction.hpp"
 #include "network/INetworkSocket.hpp"
 #include <memory>
 #include <optional>
@@ -47,7 +49,9 @@ namespace rtype::game {
     void validateCatalog() const;
     void updateConnectionStatus(float dt);
     void sendInputs();
-    void keepLocalShipOnScreen();
+    void applyLocalPrediction(float dt);
+    void updateNetworkDebugLine(float dt);
+    void sendFixedStepInputs(float dt);
 
     int playerNumber(network::NetworkId netId) const;
     std::string playerAssetFor(network::NetworkId netId) const;
@@ -57,6 +61,7 @@ namespace rtype::game {
     void playSoundId(const std::string& soundId);
 
     std::unique_ptr<network::INetworkSocket> _socket;
+    engine::SnapshotClock _snapshotClock;
     client::ClientNetworkManager _network;
     Hud _hud;
     EntityCatalog _catalog;
@@ -85,7 +90,6 @@ namespace rtype::game {
     std::optional<network::NetworkId> _bossNetId;
     std::string _bossLabel;
     bool _bossMusicPlaying{false};
-    engine::Vector2f _localShipSize{0.0f, 0.0f};
 
     std::string _host;
     unsigned short _port;
@@ -100,11 +104,19 @@ namespace rtype::game {
     network::NetworkId _firstPlayerId;
     int _playerZ;
     float _interpolationSpeed;
+    std::size_t _snapshotBufferSize;
+    float _inputStep{1.0f / 60.0f};
+    float _inputAccumulator{0.0f};
+    float _snapshotRateElapsed{0.0f};
+    std::size_t _snapshotBytesAtSample{0};
+    double _snapshotKiBPerSecond{0.0};
+    std::string _networkDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
     std::string _menuAction;
     std::string _menuScene;
-    engine::Vector2f _screenSize;
+    client::LocalPrediction _prediction;
+    bool _predictionEnabled;
   };
 }
 

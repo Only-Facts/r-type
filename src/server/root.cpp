@@ -102,7 +102,12 @@ int main(int argc, const char *argv[]) {
                << " malformed=" << current.malformedPackets
                << " rejected=" << current.rejectedPackets
                << " rate-limited=" << current.rateLimitedPackets
-               << " queue-drops=" << current.receiveQueueDrops;
+               << " queue-drops=" << current.receiveQueueDrops
+               << " snapshots(full=" << current.fullSnapshotsSent - previousStats.fullSnapshotsSent
+               << " " << static_cast<double>(current.fullSnapshotBytes - previousStats.fullSnapshotBytes) / seconds / 1024.0
+               << " KiB/s, delta=" << current.deltaSnapshotsSent - previousStats.deltaSnapshotsSent
+               << " " << static_cast<double>(current.deltaSnapshotBytes - previousStats.deltaSnapshotBytes) / seconds / 1024.0
+               << " KiB/s, requests=" << current.fullSnapshotRequests - previousStats.fullSnapshotRequests << ')';
         info(report.str().c_str());
         previousStats = current;
         nextStats = now + std::chrono::seconds(10);

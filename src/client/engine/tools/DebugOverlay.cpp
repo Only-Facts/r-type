@@ -59,5 +59,7 @@ namespace rtype::engine {
       {"sprites", std::to_string(_renderer.getCachedSpriteCount())},
       {"texts", std::to_string(_renderer.getCachedTextCount())},
     });
+    for (const auto& [name, line] : _context.debug.lines)
+      if (!line.empty()) text->text += "\n" + line;
   }
 }

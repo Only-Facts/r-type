@@ -1,5 +1,6 @@
 #include "ReliableUdpQueue.hpp"
 #include "network/PacketStream.hpp"
+#include "network/SnapshotDelta.hpp"
 #include <cassert>
 #include <cstdint>
 #include <deque>
@@ -143,10 +144,68 @@ static void testUnreliableSnapshotsAreNotQueued() {
   assert(queue.pendingCount() == 0);
 }
 
+static network::PackedEntityStateData packed(network::NetworkId id, std::int16_t x, std::int16_t y,
+                                             std::int16_t vx = 0, std::int16_t vy = 0) {
+  return network::PackedEntityStateData{id, x, y, vx, vy};
+}
+
+static void testSnapshotDeltaRoundTrip() {
+  network::SnapshotState base{{1000, packed(1000, 80, 80)}, {2000, packed(2000, 800, 400, -640)},
+                              {2001, packed(2001, 900, 100)}};
+  network::SnapshotState current{{1000, packed(1000, 88, 80)}, {2000, packed(2000, 790, 400, -640)},
+                                 {2002, packed(2002, 300, 300, 3600)}};
+
+  const auto delta = network::makeSnapshotDelta(base, 41, current, 42);
+  assert(delta.tick == 42 && delta.baseTick == 41);
+  assert(delta.changed.size() == 3);
+  assert(delta.removed.size() == 1 && delta.removed.front() == 2001);
+
+  network::PacketStreamWriter writer;
+  network::writeSnapshotDelta(writer, delta);
+  const std::size_t fullSize = sizeof(std::uint32_t) + sizeof(std::uint16_t) +
+                               current.size() * sizeof(network::PackedEntityStateData);
+  const std::size_t expected = 4 + 4 + 2 + (4 + 1 + 2) + (4 + 1 + 2) + (4 + 1 + 8) + 2 + 4;
+  assert(writer.getBuffer().size() == expected);
+  assert(expected < fullSize + 8);
+
+  network::PacketStreamReader reader(writer.getBuffer());
+  const auto decoded = network::readSnapshotDelta(reader, 64);
+  const auto rebuilt = network::applySnapshotDelta(base, decoded);
+  assert(rebuilt == current);
+}
+
+static void testSnapshotDeltaRejectsInvalidData() {
+  network::PacketStreamWriter badMask;
+  badMask << std::uint32_t{2} << std::uint32_t{1} << std::uint16_t{1} << network::NetworkId{5} << std::uint8_t{0x10}
+          << std::uint16_t{0};
+  network::PacketStreamReader badMaskReader(badMask.getBuffer());
+  bool thrown = false;
+  try {
+    network::readSnapshotDelta(badMaskReader, 64);
+  } catch (const RtypeError&) {
+    thrown = true;
+  }
+  assert(thrown);
+
+  network::SnapshotDelta partial;
+  partial.tick = 2;
+  partial.baseTick = 1;
+  partial.changed.push_back({network::DELTA_POS_X, packed(7, 10, 0)});
+  thrown = false;
+  try {
+    network::applySnapshotDelta({}, partial);
+  } catch (const RtypeError&) {
+    thrown = true;
+  }
+  assert(thrown);
+}
+
 int main() {
   testLittleEndianWireFormat();
   testPackedSnapshots();
   testReliableUdpAcknowledgements();
   testReliableQueueTimeoutAndCancellation();
   testUnreliableSnapshotsAreNotQueued();
+  testSnapshotDeltaRoundTrip();
+  testSnapshotDeltaRejectsInvalidData();
 }

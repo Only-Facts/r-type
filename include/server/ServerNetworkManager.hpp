@@ -59,14 +59,13 @@ namespace rtype::server {
     void startNetworkThread() {
       if (_receiver.joinable()) return;
       _socket.setNonBlocking(true);
-      _receiver = std::jthread([this](std::stop_token stop) {
-        receiveLoop(stop);
-      });
+      _stopReceiver.store(false);
+      _receiver = std::thread([this] { receiveLoop(); });
     }
 
     void stopNetworkThread() {
       if (!_receiver.joinable()) return;
-      _receiver.request_stop();
+      _stopReceiver.store(true);
       _receiver.join();
     }
 
@@ -103,6 +102,11 @@ namespace rtype::server {
       result.rateLimitedPackets = _metrics.rateLimitedPackets.load();
       result.receiveQueueDrops = _metrics.receiveQueueDrops.load();
       result.reliableQueueDrops = _metrics.reliableQueueDrops.load();
+      result.fullSnapshotsSent = _metrics.fullSnapshotsSent.load();
+      result.fullSnapshotBytes = _metrics.fullSnapshotBytes.load();
+      result.deltaSnapshotsSent = _metrics.deltaSnapshotsSent.load();
+      result.deltaSnapshotBytes = _metrics.deltaSnapshotBytes.load();
+      result.fullSnapshotRequests = _metrics.fullSnapshotRequests.load();
       result.reliablePending = _reliable.pendingCount();
       result.reliableAcknowledged = _reliable.acknowledgedCount();
       result.reliableRetransmitted = _reliable.retransmittedCount();
@@ -186,8 +190,8 @@ namespace rtype::server {
       }
     }
 
-    void receiveLoop(std::stop_token stop) {
-      while (!stop.stop_requested()) {
+    void receiveLoop() {
+      while (!_stopReceiver.load()) {
         network::PacketData data;
         network::Endpoint sender;
         try {
@@ -284,6 +288,7 @@ namespace rtype::server {
           routeToExistingRoom(data, sender);
           break;
         case network::PacketType::Disconnect:
+        case network::PacketType::SnapshotRequest:
           if (header.payloadSize != sizeof(network::NetworkId) +
               sizeof(std::uint64_t)) {
             _metrics.malformedPackets.fetch_add(1,
@@ -645,7 +650,8 @@ namespace rtype::server {
     std::uint32_t _nextRoomId{2};
     std::unordered_map<std::string, std::uint32_t> _pendingCreates;
     std::unordered_map<std::string, RecentLeave> _recentLeaves;
-    std::jthread _receiver;
+    std::atomic<bool> _stopReceiver{false};
+    std::thread _receiver;
     std::mutex _queueMutex;
     std::deque<ReceivedDatagram> _pendingPackets;
     std::size_t _pendingBytes{0};
