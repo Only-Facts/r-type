@@ -1,5 +1,9 @@
 # Multi-instance server
 
+> The byte layout of the lobby packets, the room state machine and the
+> reliability rules are also in the protocol reference,
+> [protocol.md](protocol.md). This document describes how the server is built.
+
 ## Overview
 
 The server owns one UDP socket and a registry of independent `GameRoom`

@@ -32,8 +32,9 @@ The client is split in three layers. Each layer only depends on the one below it
 `network/ClientNetworkManager.hpp` sits next to the game layer: it turns packets into
 entities and notifies the game through spawn / destroy callbacks. It does not render
 anything. Malformed packets are dropped (never crash the client), packets that do not
-come from the server port are ignored. Typed entities and the shoot byte are described
-in `docs/protocol-extension.md`.
+come from the server port are ignored. Every packet is described
+in `docs/protocol.md`; typed entities and the shoot byte are explained in
+`docs/protocol-extension.md`.
 
 ## Rules
 
