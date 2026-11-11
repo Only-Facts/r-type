@@ -700,8 +700,9 @@ Payload: **8 bytes**. Any other size is dropped.
 
 The server does not read `timestamp`: it copies it into a `Pong`. A `Ping`
 does not need a connection, so it also works before `ConnectReq` (for
-example to measure latency in a server list). The reference client does not
-send `Ping` yet.
+example to measure latency in a server list). The reference client sends
+one `Ping` every 0.5 s in the lobby and in game, to measure the round-trip time,
+the jitter and the loss ([network-metrics.md](network-metrics.md)).
 
 ### `Pong` (`0xE1`, S → C)
 
@@ -893,7 +894,7 @@ repeats the request itself. Every request can be repeated safely:
 | `RoomJoinReq` | `RoomJoinAck` | Every 0.5 s, up to 8 retries. |
 | `RoomLeaveReq` | `RoomLeaveAck` (same answer for 10 s after leaving) | Every 0.5 s, up to 8 retries; the game screen waits at most 1.5 s for the answer. |
 | `SnapshotRequest` | next `GameStateSyncPacked` | At most every 0.25 s. |
-| `Ping` | `Pong` | Not sent by the reference client. |
+| `Ping` | `Pong` | Never resent: one new `Ping` every 0.5 s, a `Ping` without `Pong` after 1 s counts as lost. |
 
 `PlayerInput` and `Disconnect` are never repeated: the next input replaces a
 lost one, and a lost `Disconnect` is covered by the 3-second inactivity
