@@ -214,6 +214,12 @@ confirmed by the server yet, `correction` the size of the last prediction correc
 `snapshots` the snapshot bandwidth received with the number of full states, deltas and
 full state requests.
 
+Three more lines (`LINK`, `TRAFFIC`, `ISSUES`) show the round-trip time, jitter, estimated
+loss, throughput in bytes per second, packets received, sent and rejected, retransmissions
+and prediction corrections. What each value means and how the loss is estimated is in
+[network-metrics.md](network-metrics.md). Each line of the overlay is its own text, stacked
+with `[debug] line_spacing`.
+
 ### Remote entity interpolation
 
 Every snapshot (`0x31` / `0x32`) carries the server simulation tick (60 per second). The
@@ -318,13 +324,13 @@ Implement `engine::IBackend` (window, input, textures, UDP socket) under
 | `[window]`    | `title`, `width`, `height`, `framerate` (0 = unlimited), `vsync` |
 | `[input]`     | `action = key [key...]` |
 | `[audio]`     | `enabled`, `muted`, `master_volume`, `music_volume`, `sfx_volume` |
-| `[network]`   | `host`, `port`, `interpolation_speed` (local ship without prediction), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `prediction`, `prediction_correction_speed`, `prediction_snap_distance`, `prediction_max_pending_inputs`, `debug_text`, `connect_timeout` |
+| `[network]`   | `host`, `port`, `interpolation_speed` (local ship without prediction), `server_tick_rate`, `snapshot_buffer_size`, `interpolation_delay_ms`, `max_extrapolation_ms`, `prediction`, `prediction_correction_speed`, `prediction_snap_distance`, `prediction_correction_threshold`, `prediction_max_pending_inputs`, `debug_text`, `debug_link_text`, `debug_traffic_text`, `debug_issues_text`, `connect_timeout` |
 | `[game]`      | `player_asset_prefix`, `player_variants`, `max_players`, `first_player_id`, `player_z`, `music`, `join_sound`, `leave_sound`, `player_hit_sound`, `player_death_sound`, `game_over_sound`, `hit_flash_color`, `hit_flash_duration`, `menu_action`, `menu_scene`, `lobby_scene`, `leave_action`, `leave_timeout`, `player_tag_text`, `player_tag_size`, `player_tag_offset`, `player_tag_outline` |
 | `[title]`     | `font`, `title_*`, `subtitle_*`, `prompt_*`, `difficulty_*`, `start_action`, `next_scene`, `music`, `start_sound`, `server_text`, `controls`, `label_<action>` |
 | `[skins]`     | `list`, `default`; one `[skin:<id>]` per ship: `label`, `asset`, `color`. The index in `list` is the value sent on the network |
 | `[lobby]` | `font`, `title_*`, `status_*`, `error_*`, `list_y`, `row_size`, `row_spacing`, `max_rows`, `room_text`, `state_waiting`, `state_running`, `state_full`, `hint_*`, `create_hint_text`, `panel_*`, `max_capacity`, `refresh_interval`, `*_color`, `outline_thickness`, `up_action`, `down_action`, `prev_action`, `next_action`, `start_action`, `back_action`, `create_action`, `next_scene`, `previous_scene`, `*_text` messages, `move_sound`, `confirm_sound`, `back_sound`, `error_sound` |
 | `[skin_select]` | `font`, `title_*`, `label_*`, `hint_*`, `prev_action`, `next_action`, `start_action`, `back_action`, `next_scene`, `previous_scene`, `carousel_y`, `spacing`, `selected_scale`, `other_scale`, `other_alpha`, `outline_thickness`, `dim_color`, `change_sound`, `confirm_sound`, `back_sound` |
-| `[debug]`     | `font`, `text_size`, `color`, `toggle_action`, `visible`, `refresh`, `text` |
+| `[debug]`     | `font`, `text_size`, `line_spacing`, `margin`, `color`, `outline_thickness`, `z_index`, `toggle_action`, `visible`, `refresh`, `text` |
 | `[difficulty]` | `levels`, `default`, `label_<level>`, `color_<level>` |
 | `[augments]` | `<augment id> = <profile>`; profiles in `[augment:<profile>]`: `label`, `color`, `gain_sound`, `end_sound` |
 | `[floating_text]` | `font`, `text_size`, `rise_speed`, `duration`, `fade_portion`, `offset_x`, `offset_y`, `outline_thickness`, `z`, `heal_color`, `heal_text`, `augment_text` |

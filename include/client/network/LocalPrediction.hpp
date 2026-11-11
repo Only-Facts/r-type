@@ -16,6 +16,7 @@ namespace rtype::client {
       float correctionSpeed{12.0f};
       float snapDistance{120.0f};
       gameplay::MovementBounds bounds{};
+      float correctionThreshold{0.5f};
     };
 
     void configure(const Settings& settings) {
@@ -23,6 +24,7 @@ namespace rtype::client {
       _settings.maxPendingInputs = std::max<std::size_t>(_settings.maxPendingInputs, 1);
       _settings.correctionSpeed = std::max(_settings.correctionSpeed, 0.0f);
       _settings.snapDistance = std::max(_settings.snapDistance, 0.0f);
+      _settings.correctionThreshold = std::max(_settings.correctionThreshold, 0.0f);
     }
 
     void reset(gameplay::MovementVector position) {
@@ -57,7 +59,9 @@ namespace rtype::client {
       const float dx = _predicted.x - corrected.x;
       const float dy = _predicted.y - corrected.y;
       _lastCorrection = std::hypot(dx, dy);
+      if (_lastCorrection > _settings.correctionThreshold) ++_corrections;
       if (_lastCorrection > _settings.snapDistance) {
+        ++_snaps;
         _offset = {};
       } else {
         _offset.x += dx;
@@ -81,6 +85,8 @@ namespace rtype::client {
     }
     [[nodiscard]] std::size_t pendingCount() const { return _pending.size(); }
     [[nodiscard]] float lastCorrection() const { return _lastCorrection; }
+    [[nodiscard]] std::uint64_t correctionCount() const { return _corrections; }
+    [[nodiscard]] std::uint64_t snapCount() const { return _snaps; }
 
   private:
     struct PendingInput {
@@ -100,6 +106,8 @@ namespace rtype::client {
     gameplay::MovementVector _predicted;
     gameplay::MovementVector _offset;
     float _lastCorrection{0.0f};
+    std::uint64_t _corrections{0};
+    std::uint64_t _snaps{0};
     std::deque<PendingInput> _pending;
   };
 }

@@ -195,6 +195,15 @@ if(BUILD_TESTING)
   target_link_libraries(rtype_lobby_flow_test PRIVATE Threads::Threads)
   add_test(NAME lobby_flow COMMAND rtype_lobby_flow_test)
 
+  add_executable(rtype_net_metrics_test tests/net_metrics_test.cpp)
+  target_include_directories(rtype_net_metrics_test PRIVATE
+    "include/client"
+    "include/common"
+    "include/server"
+  )
+  target_link_libraries(rtype_net_metrics_test PRIVATE Threads::Threads)
+  add_test(NAME net_metrics COMMAND rtype_net_metrics_test)
+
   add_executable(rtype_server_stress_test tests/server_stress_test.cpp)
   target_include_directories(rtype_server_stress_test PRIVATE
     "include/common"

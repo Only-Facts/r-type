@@ -18,7 +18,7 @@ same game over UDP.
 - Player shooting, collisions, health bar and death screen
 - Bonuses dropped by destroyed enemies (double shot, triple shot, heal, damage up)
 - Parallax starfield, sprite animations, sounds and music
-- Debug overlay (F3) with frame rate, frame time, sprites drawn and network statistics (server tick, snapshot buffer, late snapshots)
+- Debug overlay (F3) with frame rate, frame time, sprites drawn and network statistics (server tick, snapshot buffer, late snapshots, round-trip time, jitter, estimated loss, throughput, rejected packets, retransmissions, prediction corrections)
 - Fully configurable through text files: window, controls, assets, sounds, texts and colors
 
 ## Requirements
@@ -107,8 +107,12 @@ python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
 ```
 
 Use `--direction both` to also delay the inputs and see the local prediction at work.
-Press F3 in game to see the network line of the debug overlay (server tick, buffered
-snapshots, late snapshots, pending inputs, last correction).
+Press F3 in game to see the network lines of the debug overlay: server tick, buffered
+snapshots, late snapshots, pending inputs, last correction, then round-trip time, jitter,
+estimated loss, throughput in bytes per second, rejected packets, retransmissions and
+prediction corrections. Add `--loss 0.1` to the relay to see the loss estimate move.
+[docs/network-metrics.md](docs/network-metrics.md) explains every value and how the loss
+is estimated.
 
 ### Server options
 
@@ -187,6 +191,7 @@ More details:
 
 - [docs/client-engine.md](docs/client-engine.md): client engine, ECS, systems, configuration reference
 - [docs/protocol.md](docs/protocol.md): network protocol reference (packets, states, reliability, limits, examples)
+- [docs/network-metrics.md](docs/network-metrics.md): network metrics of the debug overlay and how the loss is estimated
 - [docs/protocol-extension.md](docs/protocol-extension.md): why the gameplay packets exist and the game rules
 
 ## Network protocol
