@@ -88,6 +88,8 @@ namespace rtype::game {
     client::LocalPrediction::Settings prediction;
     prediction.correctionSpeed = context.config.getFloat(SECTION_NETWORK, "prediction_correction_speed", prediction.correctionSpeed);
     prediction.snapDistance = context.config.getFloat(SECTION_NETWORK, "prediction_snap_distance", prediction.snapDistance);
+    prediction.correctionThreshold = context.config.getFloat(
+      SECTION_NETWORK, "prediction_correction_threshold", prediction.correctionThreshold);
     prediction.maxPendingInputs = static_cast<std::size_t>(std::max(1, context.config.getInt(
       SECTION_NETWORK, "prediction_max_pending_inputs", static_cast<int>(prediction.maxPendingInputs))));
     _prediction.configure(prediction);

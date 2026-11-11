@@ -1431,6 +1431,38 @@ static void testRetransmissionsAreCounted() {
   assert(countSent(socket, network::PacketType::Ack) >= 4 + 3);
 }
 
+static void testPredictionCorrectionsAreCounted() {
+  client::LocalPrediction prediction;
+  client::LocalPrediction::Settings settings{120, 12.0f, 120.0f, {}};
+  settings.correctionThreshold = 0.5f;
+  prediction.configure(settings);
+  const gameplay::MovementInput right{false, false, false, true};
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+  prediction.reset({100.0f, 100.0f});
+
+  prediction.applyInput(1, right);
+  prediction.reconcile(1, {100.0f + step, 100.0f});
+  assert(prediction.correctionCount() == 0 && prediction.snapCount() == 0);
+
+  prediction.applyInput(2, right);
+  prediction.reconcile(2, {100.0f + 2.0f * step, 100.2f});
+  assert(prediction.correctionCount() == 0);
+
+  prediction.applyInput(3, right);
+  prediction.reconcile(3, {100.0f + 3.0f * step, 110.0f});
+  assert(prediction.correctionCount() == 1 && prediction.snapCount() == 0);
+
+  prediction.applyInput(4, right);
+  prediction.reconcile(4, {900.0f, 500.0f});
+  assert(prediction.correctionCount() == 2 && prediction.snapCount() == 1);
+
+  prediction.reset({50.0f, 50.0f});
+  assert(prediction.correctionCount() == 2 && prediction.snapCount() == 1);
+  prediction.stop();
+  prediction.reconcile(5, {0.0f, 0.0f});
+  assert(prediction.correctionCount() == 2);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -1467,5 +1499,6 @@ int main() {
   testRoundTripTimeIsSmoothedWithJitter();
   testLossIsEstimatedFromUnansweredPings();
   testRetransmissionsAreCounted();
+  testPredictionCorrectionsAreCounted();
   return 0;
 }
