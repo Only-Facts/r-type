@@ -22,8 +22,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 
 namespace rtype::game {
   namespace {
@@ -41,8 +43,20 @@ namespace rtype::game {
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
     constexpr const char* DEBUG_LINE_NETWORK = "network";
+    constexpr const char* DEBUG_LINE_LINK = "network_link";
+    constexpr const char* DEBUG_LINE_TRAFFIC = "network_traffic";
     constexpr int MAX_INPUT_STEPS_PER_FRAME = 4;
     constexpr const char* SESSION_NET_ID = "player_net_id";
+
+    std::string formatDecimal(double value, int decimals) {
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(decimals) << value;
+      return out.str();
+    }
+
+    std::string formatOptional(const std::optional<double>& value, int decimals) {
+      return value ? formatDecimal(*value, decimals) : std::string("-");
+    }
 
     unsigned short readPort(const engine::Config& config) {
       const int port = config.getInt(SECTION_NETWORK, "port", 4242);
@@ -67,6 +81,8 @@ namespace rtype::game {
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
       _snapshotBufferSize(static_cast<std::size_t>(std::max(2, context.config.getInt(SECTION_NETWORK, "snapshot_buffer_size", 32)))),
       _networkDebugText(context.config.getString(SECTION_NETWORK, "debug_text")),
+      _linkDebugText(context.config.getString(SECTION_NETWORK, "debug_link_text")),
+      _trafficDebugText(context.config.getString(SECTION_NETWORK, "debug_traffic_text")),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
@@ -142,6 +158,8 @@ namespace rtype::game {
   GameScene::~GameScene() {
     _network.disconnect();
     _context.debug.lines.erase(DEBUG_LINE_NETWORK);
+    _context.debug.lines.erase(DEBUG_LINE_LINK);
+    _context.debug.lines.erase(DEBUG_LINE_TRAFFIC);
   }
 
   void GameScene::exit() {
@@ -240,7 +258,9 @@ namespace rtype::game {
       _snapshotBytesAtSample = bytes;
       _snapshotRateElapsed = 0.0f;
     }
-    if (!_context.debug.overlayVisible || _networkDebugText.empty()) return;
+    if (!_context.debug.overlayVisible) return;
+    updateMetricsDebugLines();
+    if (_networkDebugText.empty()) return;
     std::size_t remote = 0;
     std::size_t buffered = 0;
     _registry.each<engine::SnapshotBufferComponent>([&](engine::Entity, engine::SnapshotBufferComponent& buffer) {
@@ -263,6 +283,40 @@ namespace rtype::game {
       {"delta", std::to_string(_network.getDeltaSnapshotCount())},
       {"requests", std::to_string(_network.getFullSnapshotRequestCount())},
     });
+  }
+
+  void GameScene::updateMetricsDebugLines() {
+    using client::RejectReason;
+    const client::NetStats& stats = _network.getStats();
+    if (!_linkDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_LINK] = engine::formatTemplate(_linkDebugText, {
+        {"rtt", formatOptional(stats.rttMs, 1)},
+        {"last_rtt", formatOptional(stats.lastRttMs, 1)},
+        {"jitter", formatOptional(stats.jitterMs, 1)},
+        {"loss", formatOptional(stats.lossPercent, 1)},
+        {"pings", std::to_string(stats.pingsSent)},
+        {"pongs", std::to_string(stats.pongsReceived)},
+        {"lost", std::to_string(stats.pingsLost)},
+      });
+    }
+    if (!_trafficDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_TRAFFIC] = engine::formatTemplate(_trafficDebugText, {
+        {"in", formatDecimal(stats.bytesReceivedPerSecond, 0)},
+        {"out", formatDecimal(stats.bytesSentPerSecond, 0)},
+        {"received", std::to_string(stats.packetsReceived)},
+        {"sent", std::to_string(stats.packetsSent)},
+        {"rejected", std::to_string(stats.rejectedTotal())},
+        {"sender", std::to_string(stats.rejectedFor(RejectReason::WrongSender))},
+        {"malformed", std::to_string(stats.rejectedFor(RejectReason::Malformed))},
+        {"duplicate", std::to_string(stats.rejectedFor(RejectReason::Duplicate))},
+        {"stale", std::to_string(stats.rejectedFor(RejectReason::Stale))},
+        {"outside", std::to_string(stats.rejectedFor(RejectReason::OutsideRoom))},
+        {"resent", std::to_string(stats.retransmissionsSent)},
+        {"resent_in", std::to_string(stats.retransmissionsReceived)},
+        {"corrections", std::to_string(_prediction.correctionCount())},
+        {"snaps", std::to_string(_prediction.snapCount())},
+      });
+    }
   }
 
   void GameScene::sendFixedStepInputs(float dt) {

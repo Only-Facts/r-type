@@ -51,6 +51,7 @@ namespace rtype::game {
     void sendInputs();
     void applyLocalPrediction(float dt);
     void updateNetworkDebugLine(float dt);
+    void updateMetricsDebugLines();
     void sendFixedStepInputs(float dt);
     bool returnToLobbyOnError();
     void startLeaving();
@@ -114,6 +115,8 @@ namespace rtype::game {
     std::size_t _snapshotBytesAtSample{0};
     double _snapshotKiBPerSecond{0.0};
     std::string _networkDebugText;
+    std::string _linkDebugText;
+    std::string _trafficDebugText;
     engine::Color _hitFlashColor;
     float _hitFlashDuration;
     std::string _menuAction;
