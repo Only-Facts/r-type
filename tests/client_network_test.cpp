@@ -15,9 +15,11 @@ using namespace rtype;
 
 class ClientMockSocket final : public network::INetworkSocket {
 public:
-  void bind(unsigned short = 0) override {}
+  void bind(unsigned short = 0) override { ++binds; }
   void setNonBlocking(bool) override {}
   unsigned short getLocalPort() const override { return 50000; }
+
+  int binds{0};
 
   void send(const network::PacketData& data,
             const network::Endpoint& endpoint) override {
@@ -654,6 +656,813 @@ static void testReliableStateUpdatesIgnoreReordering() {
   assert(augmentUpdates.back() == std::make_pair(std::uint8_t{1}, 0));
 }
 
+using SessionState = client::ClientNetworkManager::SessionState;
+using DisconnectReason = client::ClientNetworkManager::DisconnectReason;
+
+static network::PacketData connectAckPacket(std::uint32_t sequence, std::uint64_t token) {
+  network::PacketStreamWriter payload;
+  payload << network::NetworkId{1000} << std::uint8_t{1} << token;
+  return makePacket(network::PacketType::ConnectAck, sequence, payload.getBuffer());
+}
+
+static std::size_t countSent(const ClientMockSocket& socket, network::PacketType type) {
+  std::size_t count = 0;
+  for (const auto& [data, endpoint] : socket.sent)
+    if (static_cast<network::PacketType>(data.at(2)) == type) ++count;
+  return count;
+}
+
+static void testSessionStatesFollowTheConnection() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::None);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(manager.getState() == SessionState::Connecting);
+  assert(!manager.isConnected());
+
+  socket.enqueue(connectAckPacket(1, 0x1122334455667788ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  assert(manager.isConnected());
+
+  manager.disconnect();
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::Left);
+  assert(countSent(socket, network::PacketType::Disconnect) == 1);
+
+  manager.disconnect();
+  assert(countSent(socket, network::PacketType::Disconnect) == 1);
+  socket.enqueue(connectAckPacket(2, 0x1122334455667788ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(!manager.sendInputs(false, false, false, false, false));
+}
+
+static void testConnectRejectEndsTheSession() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  network::PacketStreamWriter reason;
+  reason << std::uint8_t{1};
+  socket.enqueue(makePacket(network::PacketType::ConnectReject, 1, reason.getBuffer()), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::Rejected);
+
+  const std::size_t sent = countSent(socket, network::PacketType::ConnectReq);
+  for (int i = 0; i < 4; ++i) manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::ConnectReq) == sent);
+}
+
+static void testConnectTimesOutAfterEveryRetry() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  for (int i = 0; i < 8; ++i) {
+    manager.update(0.5f);
+    assert(manager.getState() == SessionState::Connecting);
+  }
+  assert(countSent(socket, network::PacketType::ConnectReq) == 9);
+
+  manager.update(0.5f);
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::TimedOut);
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::ConnectReq) == 9);
+}
+
+static void testLobbyOpensTheSocketWithoutConnecting() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::Lobby);
+  assert(socket.binds == 1);
+  assert(socket.sent.empty());
+  manager.update(0.5f);
+  assert(socket.sent.size() == countSent(socket, network::PacketType::Ping));
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(manager.getState() == SessionState::Connecting);
+  assert(socket.binds == 1);
+  assert(countSent(socket, network::PacketType::ConnectReq) == 1);
+
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::InGame);
+
+  manager.disconnect();
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.getState() == SessionState::Lobby);
+  assert(manager.getDisconnectReason() == DisconnectReason::None);
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(socket.binds == 1);
+
+  ClientMockSocket lobbySocket;
+  client::ClientNetworkManager lobby(lobbySocket, registry);
+  lobby.openLobby("127.0.0.1", 4242);
+  lobby.disconnect();
+  assert(lobby.getState() == SessionState::Disconnected);
+  assert(lobby.getDisconnectReason() == DisconnectReason::Left);
+  assert(lobbySocket.sent.empty());
+}
+
+using RoomResult = client::ClientNetworkManager::RoomResult;
+using RoomInfo = client::ClientNetworkManager::RoomInfo;
+
+static network::PacketData roomResultPacket(network::PacketType type, std::uint32_t sequence,
+                                            std::uint32_t roomId, std::uint8_t status) {
+  network::PacketStreamWriter payload;
+  payload << roomId << status;
+  return makePacket(type, sequence, payload.getBuffer());
+}
+
+static network::PacketData lastSent(const ClientMockSocket& socket, network::PacketType type) {
+  for (auto it = socket.sent.rbegin(); it != socket.sent.rend(); ++it)
+    if (static_cast<network::PacketType>(it->first.at(2)) == type) return it->first;
+  return {};
+}
+
+static void testRoomListIsRequestedAndRead() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::vector<RoomInfo>>> answers;
+  manager.setOnRoomList([&](RoomResult result, const std::vector<RoomInfo>& rooms) {
+    answers.emplace_back(result, rooms);
+  });
+
+  assert(!manager.requestRooms());
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.requestRooms());
+  const auto request = lastSent(socket, network::PacketType::RoomListReq);
+  assert(request.size() == sizeof(network::PacketHeader));
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 2);
+  assert(lastSent(socket, network::PacketType::RoomListReq) == request);
+
+  network::PacketStreamWriter payload;
+  payload << std::uint16_t{2}
+          << std::uint32_t{1} << std::uint8_t{3} << std::uint8_t{4} << std::uint8_t{1} << std::uint8_t{1}
+          << std::uint32_t{7} << std::uint8_t{2} << std::uint8_t{2} << std::uint8_t{2} << std::uint8_t{2};
+  socket.enqueue(makePacket(network::PacketType::RoomListAck, 30, payload.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countSent(socket, network::PacketType::Ack) == 1);
+  assert(answers.size() == 1 && answers[0].first == RoomResult::Success);
+  assert(answers[0].second.size() == 2);
+  assert(answers[0].second[0].id == 1 && answers[0].second[0].players == 3);
+  assert(answers[0].second[0].capacity == 4 && answers[0].second[0].state == 1);
+  assert(answers[0].second[1].id == 7 && answers[0].second[1].difficulty == 2);
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 2);
+
+  network::PacketStreamWriter truncated;
+  truncated << std::uint16_t{1} << std::uint32_t{1};
+  manager.requestRooms();
+  socket.enqueue(makePacket(network::PacketType::RoomListAck, 31, truncated.getBuffer()), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1);
+
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(answers.size() == 2 && answers[1].first == RoomResult::TimedOut);
+  assert(answers[1].second.empty());
+}
+
+static void testRoomCreationResults() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomCreated([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  assert(!manager.createRoom(2, 2));
+  manager.openLobby("127.0.0.1", 4242);
+  assert(manager.createRoom(2, 2));
+  const auto request = lastSent(socket, network::PacketType::RoomCreateReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 2);
+  assert(request[9] == 2 && request[10] == 2);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 40, 5, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1 && answers[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 41, 6, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1);
+
+  manager.createRoom(9, 0);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 42, 0, 1), server);
+  manager.update(0.0f);
+  assert(answers.back() == std::make_pair(RoomResult::InvalidSettings, std::uint32_t{0}));
+
+  manager.createRoom(2, 0);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 43, 0, 2), server);
+  manager.update(0.0f);
+  assert(answers.back() == std::make_pair(RoomResult::LimitReached, std::uint32_t{0}));
+  assert(manager.getState() == SessionState::Lobby);
+}
+
+static void testJoinRoomConnectsToTheGame() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomJoined([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.requestRooms();
+  assert(manager.joinRoom("127.0.0.1", 4242, 5, 1, 0));
+  assert(manager.getState() == SessionState::Connecting);
+  assert(socket.binds == 1);
+  const auto request = lastSent(socket, network::PacketType::RoomJoinReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 10);
+  assert(request[9] == 5 && request[13] == 1 && request[14] == 0);
+  assert(request[15] == 0 && request[16] == 0 && request[17] == 0 && request[18] == 0);
+
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == 2);
+  assert(countSent(socket, network::PacketType::RoomListReq) == 1);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 50, 9, 0), server);
+  manager.update(0.0f);
+  assert(answers.empty());
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 51, 5, 0), server);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 52, 5, 0), server);
+  manager.update(0.0f);
+  assert(answers.size() == 1 && answers[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+  assert(manager.getState() == SessionState::Connecting);
+
+  socket.enqueue(connectAckPacket(53, 0x0A0B0C0D0E0F1011ull), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+  const std::size_t joins = countSent(socket, network::PacketType::RoomJoinReq);
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == joins);
+  assert(!manager.joinRoom("127.0.0.1", 4242, 6));
+}
+
+static void testJoinRoomFailuresReturnToTheLobby() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> answers;
+  manager.setOnRoomJoined([&](RoomResult result, std::uint32_t roomId) { answers.emplace_back(result, roomId); });
+
+  const std::pair<std::uint8_t, RoomResult> cases[] = {
+    {1, RoomResult::NotFound}, {2, RoomResult::Full}, {3, RoomResult::AlreadyInRoom}
+  };
+  std::uint32_t sequence = 60;
+  for (const auto& [status, expected] : cases) {
+    manager.openLobby("127.0.0.1", 4242);
+    manager.joinRoom("127.0.0.1", 4242, 8);
+    socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, sequence++, 8, status), server);
+    manager.update(0.0f);
+    assert(answers.back() == std::make_pair(expected, std::uint32_t{8}));
+    assert(manager.getState() == SessionState::Lobby);
+    const std::size_t joins = countSent(socket, network::PacketType::RoomJoinReq);
+    manager.update(0.5f);
+    assert(countSent(socket, network::PacketType::RoomJoinReq) == joins);
+  }
+
+  manager.joinRoom("127.0.0.1", 4242, 8);
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(answers.back() == std::make_pair(RoomResult::TimedOut, std::uint32_t{8}));
+  assert(manager.getState() == SessionState::Disconnected);
+  assert(manager.getDisconnectReason() == DisconnectReason::TimedOut);
+}
+
+static std::size_t countRemoteEntities(engine::Registry& registry) {
+  std::size_t count = 0;
+  registry.each<engine::NetworkIdComponent>([&](engine::Entity, engine::NetworkIdComponent&) { ++count; });
+  return count;
+}
+
+static network::PacketData spawnEntityPacket(std::uint32_t sequence, network::NetworkId netId) {
+  network::PacketStreamWriter payload;
+  payload << netId << std::uint8_t{1} << 500.0f << 300.0f;
+  return makePacket(network::PacketType::SpawnEntity, sequence, payload.getBuffer());
+}
+
+static void joinAndConnect(client::ClientNetworkManager& manager, ClientMockSocket& socket,
+                           std::uint32_t roomId, std::uint32_t sequence, std::uint64_t token) {
+  const network::Endpoint server{"127.0.0.1", 4242};
+  assert(manager.joinRoom("127.0.0.1", 4242, roomId));
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, sequence, roomId, 0), server);
+  socket.enqueue(connectAckPacket(sequence + 1, token), server);
+  manager.update(0.0f);
+  assert(manager.getState() == SessionState::InGame);
+}
+
+static void testLeaveRoomCleansTheSession() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  engine::SnapshotClock clock(60.0, 0.1, 0.1);
+  manager.setSnapshotClock(&clock);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<std::pair<RoomResult, std::uint32_t>> left;
+  std::size_t destroyCallbacks = 0;
+  manager.setOnRoomLeft([&](RoomResult result, std::uint32_t roomId) { left.emplace_back(result, roomId); });
+  manager.setOnEntityDestroyed([&](engine::Entity, network::NetworkId, network::ext::EntityType) {
+    ++destroyCallbacks;
+  });
+
+  assert(!manager.leaveRoom());
+  manager.openLobby("127.0.0.1", 4242);
+  assert(!manager.leaveRoom());
+  joinAndConnect(manager, socket, 5, 100, 0x1111222233334444ull);
+
+  socket.enqueue(spawnEntityPacket(102, 2000), server);
+  socket.enqueue(spawnEntityPacket(103, 2001), server);
+  network::PacketStreamWriter full;
+  full << std::uint32_t{900} << std::uint16_t{1}
+       << network::packEntityState({2000, 500.0f, 300.0f, 0.0f, 0.0f});
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 104, full.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 2);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{900});
+  assert(clock.isSynchronized());
+
+  assert(manager.leaveRoom());
+  assert(manager.getState() == SessionState::Lobby);
+  assert(manager.isLeaving());
+  assert(countRemoteEntities(registry) == 0);
+  assert(destroyCallbacks == 0);
+  assert(!manager.getLastSnapshotTick());
+  assert(!clock.isSynchronized());
+  assert(manager.getLocalNetId() == 0);
+  assert(!manager.sendInputs(false, false, false, true, false));
+  const auto request = lastSent(socket, network::PacketType::RoomLeaveReq);
+  assert(request.size() == sizeof(network::PacketHeader) + 12);
+  assert(request[9] == 0xE8 && request[10] == 0x03);
+  assert(request[13] == 0x44 && request[20] == 0x11);
+
+  const std::size_t acks = countSent(socket, network::PacketType::Ack);
+  socket.enqueue(spawnEntityPacket(105, 2002), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 0);
+  assert(countSent(socket, network::PacketType::Ack) == acks + 1);
+
+  assert(!manager.joinRoom("127.0.0.1", 4242, 6));
+  assert(!manager.connectToServer("127.0.0.1", 4242));
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 2);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomLeaveAck, 106, 5, 0), server);
+  manager.update(0.0f);
+  assert(left.size() == 1 && left[0] == std::make_pair(RoomResult::Success, std::uint32_t{5}));
+  assert(!manager.isLeaving());
+  manager.update(0.5f);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 2);
+
+  joinAndConnect(manager, socket, 6, 102, 0x5555666677778888ull);
+  socket.enqueue(spawnEntityPacket(104, 2000), server);
+  network::PacketStreamWriter restarted;
+  restarted << std::uint32_t{3} << std::uint16_t{1}
+            << network::packEntityState({2000, 700.0f, 200.0f, 0.0f, 0.0f});
+  socket.enqueue(makePacket(network::PacketType::GameStateSyncPacked, 105, restarted.getBuffer()), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 1);
+  assert(manager.getLastSnapshotTick() == std::optional<std::uint32_t>{3});
+  assert(socket.binds == 1);
+}
+
+static void testLeaveRoomTimesOutAndDisconnectCleans() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  std::vector<RoomResult> left;
+  manager.setOnRoomLeft([&](RoomResult result, std::uint32_t) { left.push_back(result); });
+
+  manager.openLobby("127.0.0.1", 4242);
+  joinAndConnect(manager, socket, 5, 10, 0x0102030405060708ull);
+  manager.leaveRoom();
+  for (int i = 0; i < 9; ++i) manager.update(0.5f);
+  assert(left.size() == 1 && left[0] == RoomResult::TimedOut);
+  assert(countSent(socket, network::PacketType::RoomLeaveReq) == 9);
+  assert(!manager.isLeaving());
+  assert(manager.getState() == SessionState::Lobby);
+
+  joinAndConnect(manager, socket, 5, 20, 0x0102030405060709ull);
+  socket.enqueue(spawnEntityPacket(22, 2000), server);
+  manager.update(0.0f);
+  assert(countRemoteEntities(registry) == 1);
+  manager.disconnect();
+  assert(countRemoteEntities(registry) == 0);
+  assert(manager.getState() == SessionState::Disconnected);
+
+  ClientMockSocket connecting;
+  client::ClientNetworkManager pending(connecting, registry);
+  pending.openLobby("127.0.0.1", 4242);
+  pending.joinRoom("127.0.0.1", 4242, 5);
+  assert(pending.leaveRoom());
+  assert(pending.getState() == SessionState::Lobby);
+  assert(countSent(connecting, network::PacketType::RoomLeaveReq) == 0);
+  const std::size_t joins = countSent(connecting, network::PacketType::RoomJoinReq);
+  pending.update(0.5f);
+  assert(countSent(connecting, network::PacketType::RoomJoinReq) == joins);
+}
+
+static void testNetStatsStartEmpty() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const client::NetStats& stats = manager.getStats();
+  assert(stats.packetsSent == 0 && stats.packetsReceived == 0);
+  assert(stats.bytesSent == 0 && stats.bytesReceived == 0);
+  assert(stats.rejectedTotal() == 0);
+  assert(!stats.rttMs && !stats.jitterMs && !stats.lossPercent);
+  assert(stats.retransmissionsSent == 0 && stats.retransmissionsReceived == 0);
+
+  client::NetStats counted;
+  counted.reject(client::RejectReason::Duplicate);
+  counted.reject(client::RejectReason::Duplicate);
+  counted.reject(client::RejectReason::WrongSender);
+  assert(counted.rejectedFor(client::RejectReason::Duplicate) == 2);
+  assert(counted.rejectedFor(client::RejectReason::WrongSender) == 1);
+  assert(counted.rejectedFor(client::RejectReason::Stale) == 0);
+  assert(counted.rejectedTotal() == 3);
+}
+
+static void testNetStatsCountPacketsAndBytes() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  assert(stats.packetsSent == 1);
+  assert(stats.bytesSent == sizeof(network::PacketHeader) + 2);
+
+  manager.update(0.5f);
+  assert(stats.packetsSent == 2);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2));
+
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(stats.packetsReceived == 1);
+  assert(stats.bytesReceived == sizeof(network::PacketHeader) + 13);
+  assert(stats.packetsSent == 3);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2) + sizeof(network::PacketHeader) + 4);
+
+  manager.sendInputs(false, false, false, true, false);
+  assert(stats.packetsSent == 4);
+  assert(stats.bytesSent == 2 * (sizeof(network::PacketHeader) + 2) + sizeof(network::PacketHeader) + 4 +
+                            sizeof(network::PacketHeader) + 17);
+
+  socket.enqueue(connectAckPacket(2, 0x0102030405060708ull), network::Endpoint{"127.0.0.1", 5000});
+  socket.enqueue(network::PacketData{0x01, 0x02, 0x03}, server);
+  manager.update(0.0f);
+  assert(stats.packetsReceived == 3);
+  assert(stats.bytesReceived == sizeof(network::PacketHeader) + 13 + sizeof(network::PacketHeader) + 13 + 3);
+  assert(stats.packetsSent == 5);
+  assert(countSent(socket, network::PacketType::Ping) == 1);
+
+  assert(stats.packetsSent == socket.sent.size());
+}
+
+static void testNetStatsCountRejectedPacketsByReason() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.openLobby("127.0.0.1", 4242);
+  socket.enqueue(spawnEntityPacket(1, 2000), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::OutsideRoom) == 1);
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  socket.enqueue(connectAckPacket(2, 0), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 1);
+  socket.enqueue(connectAckPacket(3, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.isConnected());
+
+  socket.enqueue(spawnEntityPacket(10, 2000), network::Endpoint{"127.0.0.1", 5000});
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::WrongSender) == 1);
+
+  auto badMagic = spawnEntityPacket(11, 2000);
+  badMagic[0] = 0x00;
+  auto badSize = spawnEntityPacket(12, 2000);
+  badSize.push_back(0x00);
+  network::PacketStreamWriter shortHealth;
+  shortHealth << network::NetworkId{2000};
+  socket.enqueue(network::PacketData{0x54, 0x52, 0x13}, server);
+  socket.enqueue(badMagic, server);
+  socket.enqueue(badSize, server);
+  socket.enqueue(makePacket(network::PacketType::HealthUpdate, 13, shortHealth.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 5);
+
+  socket.enqueue(spawnEntityPacket(20, 2000), server);
+  socket.enqueue(spawnEntityPacket(20, 2000), server);
+  socket.enqueue(spawnEntityPacket(21, 2000), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Duplicate) == 2);
+
+  network::PacketStreamWriter score;
+  score << network::NetworkId{1000} << std::uint32_t{500};
+  socket.enqueue(makePacket(network::PacketType::ScoreUpdate, 31, score.getBuffer()), server);
+  socket.enqueue(makePacket(network::PacketType::ScoreUpdate, 30, score.getBuffer()), server);
+  network::PacketStreamWriter inputAck;
+  inputAck << std::uint32_t{0} << std::uint32_t{1} << 200.0f << 300.0f;
+  manager.sendInputs(false, false, false, false, false);
+  network::PacketStreamWriter newerAck;
+  newerAck << std::uint32_t{100} << std::uint32_t{2} << 200.0f << 300.0f;
+  socket.enqueue(makePacket(network::PacketType::InputAck, 32, newerAck.getBuffer()), server);
+  socket.enqueue(makePacket(network::PacketType::InputAck, 33, inputAck.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.rejectedFor(RejectReason::Stale) == 2);
+
+  assert(stats.rejectedTotal() == 11);
+  assert(manager.getDroppedPacketCount() == 11);
+  assert(stats.packetsReceived == 15);
+}
+
+static void testNetStatsMeasureThroughputInBytesPerSecond() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+  const double header = sizeof(network::PacketHeader);
+  const double connect = header + 2;
+  const double ack = header + 4;
+  const double input = header + 17;
+  const double ping = header + 8;
+
+  manager.connectToServer("127.0.0.1", 4242, 1, 0);
+  socket.enqueue(connectAckPacket(1, 0x0102030405060708ull), server);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 0.0 && stats.bytesReceivedPerSecond == 0.0);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 2.0 * connect + ack + ping);
+  assert(stats.bytesReceivedPerSecond == header + 13);
+
+  for (int i = 0; i < 10; ++i) manager.sendInputs(false, false, false, true, false);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 2.0 * connect + ack + ping);
+  manager.update(0.5f);
+  assert(stats.bytesSentPerSecond == 10.0 * input + 2.0 * ping);
+  assert(stats.bytesReceivedPerSecond == 0.0);
+
+  for (int i = 0; i < 6; ++i) manager.sendInputs(false, false, false, true, false);
+  manager.update(2.0f);
+  assert(stats.bytesSentPerSecond == (6.0 * input + ping) / 2.0);
+
+  manager.update(0.0f);
+  manager.update(-1.0f);
+  assert(stats.bytesSentPerSecond == (6.0 * input + ping) / 2.0);
+}
+
+static std::uint64_t pingTimestamp(const network::PacketData& packet) {
+  network::PacketStreamReader reader(packet);
+  network::PacketHeader header{};
+  std::uint64_t timestamp{0};
+  reader >> header >> timestamp;
+  return timestamp;
+}
+
+static network::PacketData pongPacket(std::uint32_t sequence, std::uint64_t timestamp) {
+  network::PacketStreamWriter payload;
+  payload << timestamp;
+  return makePacket(network::PacketType::Pong, sequence, payload.getBuffer());
+}
+
+static void testPingsMeasureRoundTripTime() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.update(1.0f);
+  assert(stats.pingsSent == 0);
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 1);
+  const auto ping = lastSent(socket, network::PacketType::Ping);
+  assert(ping.size() == sizeof(network::PacketHeader) + 8);
+  const std::uint64_t timestamp = pingTimestamp(ping);
+  assert(timestamp == 1250000);
+  assert(!stats.lastRttMs);
+
+  socket.enqueue(pongPacket(1, timestamp), server);
+  manager.update(0.04f);
+  assert(stats.pongsReceived == 1);
+  assert(stats.lastRttMs && std::abs(*stats.lastRttMs - 40.0) < 0.01);
+
+  socket.enqueue(pongPacket(2, timestamp), server);
+  socket.enqueue(pongPacket(3, 42), server);
+  network::PacketStreamWriter shortPong;
+  shortPong << std::uint32_t{7};
+  socket.enqueue(makePacket(network::PacketType::Pong, 4, shortPong.getBuffer()), server);
+  manager.update(0.0f);
+  assert(stats.pongsReceived == 1);
+  assert(stats.rejectedFor(RejectReason::Stale) == 2);
+  assert(stats.rejectedFor(RejectReason::Malformed) == 1);
+
+  manager.update(0.46f);
+  assert(stats.pingsSent == 2);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 2);
+  manager.update(0.25f);
+  assert(stats.pingsSent == 3);
+
+  manager.disconnect();
+  manager.update(1.0f);
+  assert(stats.pingsSent == 3);
+}
+
+static void answerNextPing(client::ClientNetworkManager& manager, ClientMockSocket& socket,
+                           std::uint32_t sequence, float delay) {
+  const network::Endpoint server{"127.0.0.1", 4242};
+  socket.sent.clear();
+  manager.update(0.5f);
+  const auto ping = lastSent(socket, network::PacketType::Ping);
+  assert(!ping.empty());
+  socket.enqueue(pongPacket(sequence, pingTimestamp(ping)), server);
+  manager.update(delay);
+}
+
+static void testRoundTripTimeIsSmoothedWithJitter() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const client::NetStats& stats = manager.getStats();
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.0f);
+
+  answerNextPing(manager, socket, 1, 0.040f);
+  assert(std::abs(*stats.lastRttMs - 40.0) < 0.01);
+  assert(std::abs(*stats.rttMs - 40.0) < 0.01);
+  assert(!stats.jitterMs);
+
+  answerNextPing(manager, socket, 2, 0.060f);
+  assert(std::abs(*stats.lastRttMs - 60.0) < 0.01);
+  assert(std::abs(*stats.rttMs - 42.5) < 0.01);
+  assert(stats.jitterMs && std::abs(*stats.jitterMs - 20.0) < 0.01);
+
+  answerNextPing(manager, socket, 3, 0.050f);
+  assert(std::abs(*stats.rttMs - 43.4375) < 0.01);
+  assert(std::abs(*stats.jitterMs - 19.375) < 0.01);
+
+  for (std::uint32_t i = 0; i < 60; ++i) answerNextPing(manager, socket, 10 + i, 0.050f);
+  assert(std::abs(*stats.rttMs - 50.0) < 0.1);
+  assert(*stats.jitterMs < 0.5);
+  assert(stats.pongsReceived == 63);
+}
+
+static void testLossIsEstimatedFromUnansweredPings() {
+  using client::RejectReason;
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+  manager.openLobby("127.0.0.1", 4242);
+  manager.update(0.0f);
+  const std::uint64_t firstPing = pingTimestamp(lastSent(socket, network::PacketType::Ping));
+
+  std::uint32_t sequence = 1;
+  for (int i = 1; i <= 40; ++i) {
+    socket.sent.clear();
+    manager.update(0.5f);
+    const auto ping = lastSent(socket, network::PacketType::Ping);
+    assert(!ping.empty());
+    if (i % 4 != 0) {
+      socket.enqueue(pongPacket(sequence++, pingTimestamp(ping)), server);
+      manager.update(0.0f);
+    }
+    if (i == 4) {
+      assert(stats.pingsLost == 1);
+      assert(!stats.lossPercent);
+    }
+  }
+  manager.update(1.0f);
+
+  assert(stats.pingsSent == 42);
+  assert(stats.pongsReceived == 30);
+  assert(stats.pingsLost == 11);
+  assert(stats.lossPercent && std::abs(*stats.lossPercent - 27.5) < 0.01);
+
+  socket.enqueue(pongPacket(sequence++, firstPing), server);
+  manager.update(0.0f);
+  assert(stats.pongsReceived == 30);
+  assert(stats.rejectedFor(RejectReason::Stale) == 1);
+
+  for (int i = 0; i < 40; ++i) {
+    socket.sent.clear();
+    manager.update(0.5f);
+    socket.enqueue(pongPacket(sequence++, pingTimestamp(lastSent(socket, network::PacketType::Ping))), server);
+    manager.update(0.0f);
+  }
+  assert(stats.lossPercent && std::abs(*stats.lossPercent - 2.5) < 0.01);
+  assert(stats.pingsLost == 12);
+}
+
+static void testRetransmissionsAreCounted() {
+  ClientMockSocket socket;
+  engine::Registry registry;
+  client::ClientNetworkManager manager(socket, registry);
+  const network::Endpoint server{"127.0.0.1", 4242};
+  const client::NetStats& stats = manager.getStats();
+
+  manager.openLobby("127.0.0.1", 4242);
+  manager.requestRooms();
+  manager.createRoom(2, 1);
+  assert(stats.retransmissionsSent == 0);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 2);
+  socket.enqueue(roomResultPacket(network::PacketType::RoomCreateAck, 1, 5, 0), server);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 4);
+
+  manager.joinRoom("127.0.0.1", 4242, 5);
+  manager.update(0.5f);
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 6);
+  assert(countSent(socket, network::PacketType::RoomJoinReq) == 3);
+
+  socket.enqueue(roomResultPacket(network::PacketType::RoomJoinAck, 2, 5, 0), server);
+  socket.enqueue(connectAckPacket(3, 0x0102030405060708ull), server);
+  manager.update(0.0f);
+  assert(manager.isConnected());
+  manager.update(0.5f);
+  assert(stats.retransmissionsSent == 6);
+
+  assert(stats.retransmissionsReceived == 0);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(10, 2000), server);
+  socket.enqueue(spawnEntityPacket(11, 2000), server);
+  manager.update(0.0f);
+  assert(stats.retransmissionsReceived == 2);
+  assert(stats.rejectedFor(client::RejectReason::Duplicate) == 3);
+  assert(countSent(socket, network::PacketType::Ack) >= 4 + 3);
+}
+
+static void testPredictionCorrectionsAreCounted() {
+  client::LocalPrediction prediction;
+  client::LocalPrediction::Settings settings{120, 12.0f, 120.0f, {}};
+  settings.correctionThreshold = 0.5f;
+  prediction.configure(settings);
+  const gameplay::MovementInput right{false, false, false, true};
+  const float step = gameplay::PLAYER_SPEED * gameplay::INPUT_STEP_SECONDS;
+  prediction.reset({100.0f, 100.0f});
+
+  prediction.applyInput(1, right);
+  prediction.reconcile(1, {100.0f + step, 100.0f});
+  assert(prediction.correctionCount() == 0 && prediction.snapCount() == 0);
+
+  prediction.applyInput(2, right);
+  prediction.reconcile(2, {100.0f + 2.0f * step, 100.2f});
+  assert(prediction.correctionCount() == 0);
+
+  prediction.applyInput(3, right);
+  prediction.reconcile(3, {100.0f + 3.0f * step, 110.0f});
+  assert(prediction.correctionCount() == 1 && prediction.snapCount() == 0);
+
+  prediction.applyInput(4, right);
+  prediction.reconcile(4, {900.0f, 500.0f});
+  assert(prediction.correctionCount() == 2 && prediction.snapCount() == 1);
+
+  prediction.reset({50.0f, 50.0f});
+  assert(prediction.correctionCount() == 2 && prediction.snapCount() == 1);
+  prediction.stop();
+  prediction.reconcile(5, {0.0f, 0.0f});
+  assert(prediction.correctionCount() == 2);
+}
+
 int main() {
   testReorderedConnectAndPlayerSpawn();
   testPackedDeltaSnapshotIsApplied();
@@ -672,5 +1481,24 @@ int main() {
   testEarlyDeltaWaitsForItsBase();
   testLostBaseRequestsFullSnapshot();
   testReliableStateUpdatesIgnoreReordering();
+  testSessionStatesFollowTheConnection();
+  testConnectRejectEndsTheSession();
+  testConnectTimesOutAfterEveryRetry();
+  testLobbyOpensTheSocketWithoutConnecting();
+  testRoomListIsRequestedAndRead();
+  testRoomCreationResults();
+  testJoinRoomConnectsToTheGame();
+  testJoinRoomFailuresReturnToTheLobby();
+  testLeaveRoomCleansTheSession();
+  testLeaveRoomTimesOutAndDisconnectCleans();
+  testNetStatsStartEmpty();
+  testNetStatsCountPacketsAndBytes();
+  testNetStatsCountRejectedPacketsByReason();
+  testNetStatsMeasureThroughputInBytesPerSecond();
+  testPingsMeasureRoundTripTime();
+  testRoundTripTimeIsSmoothedWithJitter();
+  testLossIsEstimatedFromUnansweredPings();
+  testRetransmissionsAreCounted();
+  testPredictionCorrectionsAreCounted();
   return 0;
 }

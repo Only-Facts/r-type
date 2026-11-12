@@ -18,7 +18,7 @@ same game over UDP.
 - Player shooting, collisions, health bar and death screen
 - Bonuses dropped by destroyed enemies (double shot, triple shot, heal, damage up)
 - Parallax starfield, sprite animations, sounds and music
-- Debug overlay (F3) with frame rate, frame time, sprites drawn and network statistics (server tick, snapshot buffer, late snapshots)
+- Debug overlay (F3) with frame rate, frame time, sprites drawn and network statistics (server tick, snapshot buffer, late snapshots, round-trip time, jitter, estimated loss, throughput, rejected packets, retransmissions, prediction corrections)
 - Fully configurable through text files: window, controls, assets, sounds, texts and colors
 
 ## Requirements
@@ -107,8 +107,12 @@ python3 scripts/lag_relay.py --delay 30 --jitter 60 --reorder 0.1
 ```
 
 Use `--direction both` to also delay the inputs and see the local prediction at work.
-Press F3 in game to see the network line of the debug overlay (server tick, buffered
-snapshots, late snapshots, pending inputs, last correction).
+Press F3 in game to see the network lines of the debug overlay: server tick, buffered
+snapshots, late snapshots, pending inputs, last correction, then round-trip time, jitter,
+estimated loss, throughput in bytes per second, rejected packets, retransmissions and
+prediction corrections. Add `--loss 0.1` to the relay to see the loss estimate move.
+[docs/network-metrics.md](docs/network-metrics.md) explains every value and how the loss
+is estimated.
 
 ### Server options
 
@@ -130,8 +134,16 @@ snapshots, late snapshots, pending inputs, last correction).
 ## How to play
 
 1. On the title screen, choose the difficulty with Left / Right and press Enter or Space.
-2. Choose your ship with Left / Right and press Enter or Space to start. Backspace goes back to the title screen.
-3. Destroy the Bydos, avoid their missiles and collect the bonuses they drop.
+2. Choose your ship with Left / Right and press Enter or Space. Backspace goes back to the title screen.
+3. In the lobby, choose a room with Up / Down and press Enter to join it. The list shows the players, the free
+   places, the difficulty and the state of every room, and is refreshed every 2 seconds.
+4. To create a room, press C, choose the number of players with Left / Right and the difficulty with Up / Down,
+   then press Enter: you join it right away. Backspace closes the panel, or goes back to the ship selection.
+5. Destroy the Bydos, avoid their missiles and collect the bonuses they drop.
+6. Press Backspace at any time to leave the game and go back to the lobby. After your ship is destroyed, press
+   Enter to go back to the lobby. You can then join another room without restarting the game.
+
+A full, expired or unknown room, or a server that does not answer, is shown in red in the lobby.
 
 | Action | Keys |
 |--------|------|
@@ -139,6 +151,10 @@ snapshots, late snapshots, pending inputs, last correction).
 | Shoot | Space |
 | Mute / unmute | M |
 | Debug overlay | F3 |
+| Choose a room | Up / Down, Z / S |
+| Join a room | Enter |
+| Create a room | C |
+| Leave the game | Backspace |
 | Quit | Escape |
 
 All keys can be changed in the `[input]` section of `assets/config/client.cfg`.
@@ -174,7 +190,9 @@ All keys can be changed in the `[input]` section of `assets/config/client.cfg`.
 More details:
 
 - [docs/client-engine.md](docs/client-engine.md): client engine, ECS, systems, configuration reference
-- [docs/protocol-extension.md](docs/protocol-extension.md): network protocol, packet layouts and game rules
+- [docs/protocol.md](docs/protocol.md): network protocol reference (packets, states, reliability, limits, examples)
+- [docs/network-metrics.md](docs/network-metrics.md): network metrics of the debug overlay and how the loss is estimated
+- [docs/protocol-extension.md](docs/protocol-extension.md): why the gameplay packets exist and the game rules
 
 ## Network protocol
 
@@ -198,7 +216,8 @@ sequence number (u32) and payload size (u16).
 | `0x33` | InputAck | server to client | last input applied, tick, confirmed position |
 | `0x34` | SnapshotRequest | client to server | player id, session token: asks for a full state |
 
-The exact byte layout of each packet is described in [docs/protocol-extension.md](docs/protocol-extension.md).
+This table is a summary. The exact byte layout of every packet, including the lobby, `Ack` and `Ping`
+packets, is described in [docs/protocol.md](docs/protocol.md).
 
 ## Project structure
 

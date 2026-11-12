@@ -15,14 +15,17 @@
 #include "engine/systems/MovementSystem.hpp"
 #include "engine/systems/ParallaxSystem.hpp"
 #include "exception.hpp"
+#include "game/LobbyScene.hpp"
 #include "game/StarfieldSpawner.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <optional>
+#include <sstream>
 
 namespace rtype::game {
   namespace {
@@ -40,8 +43,21 @@ namespace rtype::game {
     constexpr const char* SECTION_AUGMENTS = "augments";
     constexpr const char* SECTION_FLOATING = "floating_text";
     constexpr const char* DEBUG_LINE_NETWORK = "network";
+    constexpr const char* DEBUG_LINE_LINK = "network_link";
+    constexpr const char* DEBUG_LINE_TRAFFIC = "network_traffic";
+    constexpr const char* DEBUG_LINE_ISSUES = "network_traffic_issues";
     constexpr int MAX_INPUT_STEPS_PER_FRAME = 4;
     constexpr const char* SESSION_NET_ID = "player_net_id";
+
+    std::string formatDecimal(double value, int decimals) {
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(decimals) << value;
+      return out.str();
+    }
+
+    std::string formatOptional(const std::optional<double>& value, int decimals) {
+      return value ? formatDecimal(*value, decimals) : std::string("-");
+    }
 
     unsigned short readPort(const engine::Config& config) {
       const int port = config.getInt(SECTION_NETWORK, "port", 4242);
@@ -66,10 +82,16 @@ namespace rtype::game {
       _interpolationSpeed(context.config.getFloat(SECTION_NETWORK, "interpolation_speed", 15.0f)),
       _snapshotBufferSize(static_cast<std::size_t>(std::max(2, context.config.getInt(SECTION_NETWORK, "snapshot_buffer_size", 32)))),
       _networkDebugText(context.config.getString(SECTION_NETWORK, "debug_text")),
+      _linkDebugText(context.config.getString(SECTION_NETWORK, "debug_link_text")),
+      _trafficDebugText(context.config.getString(SECTION_NETWORK, "debug_traffic_text")),
+      _issuesDebugText(context.config.getString(SECTION_NETWORK, "debug_issues_text")),
       _hitFlashColor(context.config.getColor(SECTION_GAME, "hit_flash_color", engine::Color{255, 80, 80, 255})),
       _hitFlashDuration(context.config.getFloat(SECTION_GAME, "hit_flash_duration", 0.15f)),
       _menuAction(context.config.getString(SECTION_GAME, "menu_action", "menu")),
       _menuScene(context.config.getString(SECTION_GAME, "menu_scene", "title")),
+      _lobbyScene(context.config.getString(SECTION_GAME, "lobby_scene", "lobby")),
+      _leaveAction(context.config.getString(SECTION_GAME, "leave_action", "back")),
+      _leaveTimeout(context.config.getFloat(SECTION_GAME, "leave_timeout", 1.5f)),
       _predictionEnabled(context.config.getBool(SECTION_NETWORK, "prediction", true)) {
     if (_playerVariants < 1) throw RtypeError("[game] player_variants must be >= 1");
     if (_maxPlayers < 1) throw RtypeError("[game] max_players must be >= 1");
@@ -84,6 +106,8 @@ namespace rtype::game {
     client::LocalPrediction::Settings prediction;
     prediction.correctionSpeed = context.config.getFloat(SECTION_NETWORK, "prediction_correction_speed", prediction.correctionSpeed);
     prediction.snapDistance = context.config.getFloat(SECTION_NETWORK, "prediction_snap_distance", prediction.snapDistance);
+    prediction.correctionThreshold = context.config.getFloat(
+      SECTION_NETWORK, "prediction_correction_threshold", prediction.correctionThreshold);
     prediction.maxPendingInputs = static_cast<std::size_t>(std::max(1, context.config.getInt(
       SECTION_NETWORK, "prediction_max_pending_inputs", static_cast<int>(prediction.maxPendingInputs))));
     _prediction.configure(prediction);
@@ -136,6 +160,9 @@ namespace rtype::game {
   GameScene::~GameScene() {
     _network.disconnect();
     _context.debug.lines.erase(DEBUG_LINE_NETWORK);
+    _context.debug.lines.erase(DEBUG_LINE_LINK);
+    _context.debug.lines.erase(DEBUG_LINE_TRAFFIC);
+    _context.debug.lines.erase(DEBUG_LINE_ISSUES);
   }
 
   void GameScene::exit() {
@@ -192,22 +219,34 @@ namespace rtype::game {
     _difficulty.load(_context.config, "difficulty");
     std::optional<std::uint8_t> skin;
     if (!_skins.empty()) skin = static_cast<std::uint8_t>(_skins.selected(_context.session));
-    // ask for the id of our previous game, so we keep the same player number after a game over
     std::optional<network::NetworkId> previousNetId;
     if (const int id = _context.session.getInt(SESSION_NET_ID, -1); id > 0)
       previousNetId = static_cast<network::NetworkId>(id);
-    _network.connectToServer(_host, _port,
-                             static_cast<std::uint8_t>(_difficulty.selected(_context.session)), skin, previousNetId);
+    const auto difficulty = static_cast<std::uint8_t>(_difficulty.selected(_context.session));
+    _network.setOnRoomJoined([this](client::ClientNetworkManager::RoomResult result, std::uint32_t) {
+      if (result != client::ClientNetworkManager::RoomResult::Success) _joinError = result;
+    });
+    if (const int room = _context.session.getInt(LobbyScene::SESSION_ROOM, -1); room > 0) {
+      _roomId = static_cast<std::uint32_t>(room);
+      _network.joinRoom(_host, _port, *_roomId, difficulty, skin, previousNetId);
+      _hud.setStatus("joining_text", {{"room", std::to_string(*_roomId)}}, engine::Color{});
+    } else
+      _network.connectToServer(_host, _port, difficulty, skin, previousNetId);
   }
 
   void GameScene::onUpdate(float dt) {
-    if (_localDead && _context.actions.isJustPressed(_menuAction)) {
-      _context.scenes.changeScene(_menuScene);
+    if (_leaving) {
+      updateLeaving(dt);
+      return;
+    }
+    if (_context.actions.isJustPressed(_leaveAction) || (_localDead && _context.actions.isJustPressed(_menuAction))) {
+      startLeaving();
       return;
     }
     sendFixedStepInputs(dt);
     _snapshotClock.advance(dt);
     _network.update(dt);
+    if (returnToLobbyOnError()) return;
     applyLocalPrediction(dt);
     _hud.update(dt);
     updateConnectionStatus(dt);
@@ -222,7 +261,9 @@ namespace rtype::game {
       _snapshotBytesAtSample = bytes;
       _snapshotRateElapsed = 0.0f;
     }
-    if (!_context.debug.overlayVisible || _networkDebugText.empty()) return;
+    if (!_context.debug.overlayVisible) return;
+    updateMetricsDebugLines();
+    if (_networkDebugText.empty()) return;
     std::size_t remote = 0;
     std::size_t buffered = 0;
     _registry.each<engine::SnapshotBufferComponent>([&](engine::Entity, engine::SnapshotBufferComponent& buffer) {
@@ -245,6 +286,44 @@ namespace rtype::game {
       {"delta", std::to_string(_network.getDeltaSnapshotCount())},
       {"requests", std::to_string(_network.getFullSnapshotRequestCount())},
     });
+  }
+
+  void GameScene::updateMetricsDebugLines() {
+    using client::RejectReason;
+    const client::NetStats& stats = _network.getStats();
+    if (!_linkDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_LINK] = engine::formatTemplate(_linkDebugText, {
+        {"rtt", formatOptional(stats.rttMs, 1)},
+        {"last_rtt", formatOptional(stats.lastRttMs, 1)},
+        {"jitter", formatOptional(stats.jitterMs, 1)},
+        {"loss", formatOptional(stats.lossPercent, 1)},
+        {"pings", std::to_string(stats.pingsSent)},
+        {"pongs", std::to_string(stats.pongsReceived)},
+        {"lost", std::to_string(stats.pingsLost)},
+      });
+    }
+    if (!_trafficDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_TRAFFIC] = engine::formatTemplate(_trafficDebugText, {
+        {"in", formatDecimal(stats.bytesReceivedPerSecond, 0)},
+        {"out", formatDecimal(stats.bytesSentPerSecond, 0)},
+        {"received", std::to_string(stats.packetsReceived)},
+        {"sent", std::to_string(stats.packetsSent)},
+        {"resent", std::to_string(stats.retransmissionsSent)},
+        {"resent_in", std::to_string(stats.retransmissionsReceived)},
+      });
+    }
+    if (!_issuesDebugText.empty()) {
+      _context.debug.lines[DEBUG_LINE_ISSUES] = engine::formatTemplate(_issuesDebugText, {
+        {"rejected", std::to_string(stats.rejectedTotal())},
+        {"sender", std::to_string(stats.rejectedFor(RejectReason::WrongSender))},
+        {"malformed", std::to_string(stats.rejectedFor(RejectReason::Malformed))},
+        {"duplicate", std::to_string(stats.rejectedFor(RejectReason::Duplicate))},
+        {"stale", std::to_string(stats.rejectedFor(RejectReason::Stale))},
+        {"outside", std::to_string(stats.rejectedFor(RejectReason::OutsideRoom))},
+        {"corrections", std::to_string(_prediction.correctionCount())},
+        {"snaps", std::to_string(_prediction.snapCount())},
+      });
+    }
   }
 
   void GameScene::sendFixedStepInputs(float dt) {
@@ -277,6 +356,44 @@ namespace rtype::game {
     const gameplay::MovementVector shown = _prediction.displayed();
     transform->position = {shown.x, shown.y};
     transform->targetPosition = transform->position;
+  }
+
+  void GameScene::startLeaving() {
+    _prediction.stop();
+    _hud.clearAugments();
+    if (!_network.leaveRoom()) {
+      _context.scenes.changeScene(_menuScene);
+      return;
+    }
+    _leaving = true;
+    _leavingElapsed = 0.0f;
+    _players.clear();
+    _deadPlayers.clear();
+    _localShip.reset();
+    _hud.setStatus("leaving_text", {}, engine::Color{});
+  }
+
+  void GameScene::updateLeaving(float dt) {
+    _network.update(dt);
+    _hud.update(dt);
+    _leavingElapsed += std::max(dt, 0.0f);
+    if (!_network.isLeaving() || _leavingElapsed >= _leaveTimeout) _context.scenes.changeScene(_menuScene);
+  }
+
+  bool GameScene::returnToLobbyOnError() {
+    using Network = client::ClientNetworkManager;
+    if (!_joinError && !_wasConnected && _network.getState() == Network::SessionState::Disconnected) {
+      if (_network.getDisconnectReason() == Network::DisconnectReason::Rejected) _joinError = Network::RoomResult::Full;
+      else if (_network.getDisconnectReason() == Network::DisconnectReason::TimedOut)
+        _joinError = Network::RoomResult::TimedOut;
+    }
+    if (!_joinError || !_context.scenes.hasScene(_lobbyScene)) return false;
+    _context.session.setInt(LobbyScene::SESSION_ERROR, static_cast<int>(*_joinError));
+    _context.session.setInt(LobbyScene::SESSION_ERROR_ROOM, static_cast<int>(_roomId.value_or(1)));
+    _context.session.setInt(LobbyScene::SESSION_ROOM, -1);
+    _joinError.reset();
+    _context.scenes.changeScene(_lobbyScene);
+    return true;
   }
 
   void GameScene::updateConnectionStatus(float dt) {
